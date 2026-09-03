@@ -328,5 +328,6 @@ class LocalRagProvider(MemoryProvider):
         self._service = None
 
 
-def register(ctx: Any) -> None:
+def register(ctx) -> None:
+    """Register the official memory provider."""
     ctx.register_memory_provider(LocalRagProvider())

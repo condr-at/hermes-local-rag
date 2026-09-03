@@ -9,7 +9,7 @@ import pytest
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-from local_rag import LocalRagProvider
+from local_rag import LocalRagProvider, register
 from local_rag.embedder import LiteRTEmbeddingGemma, default_model_path, get_shared_embedder
 from local_rag.policy import IngestDecision, classify_text
 from local_rag.store import MemoryStore
@@ -395,3 +395,86 @@ def test_provider_tools_search_and_forget_only_current_namespace(tmp_path: Path)
 
     assert removed == {"removed": True}
     assert provider.prefetch("guitar") == ""
+
+
+def test_plugin_registers_structured_selective_backfill_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import argparse
+    from local_rag.cli import backfill_command, register_backfill_cli
+
+    class StructuredResult:
+        parsed = {"items": [{
+            "text": "The project uses SQLite for tests.", "scope": "project", "subject": "test database",
+            "durability": "stable", "importance": 0.8, "confidence": 0.95, "tags": ["sqlite"],
+        }]}
+
+    class Llm:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def complete_structured(self, **kwargs):
+            self.calls.append(kwargs)
+            return StructuredResult()
+
+    class Context:
+        def __init__(self) -> None:
+            self.llm = Llm()
+            self.provider = None
+            self.command = None
+
+        def register_memory_provider(self, provider) -> None:
+            self.provider = provider
+
+        def register_cli_command(self, **kwargs) -> None:
+            self.command = kwargs
+
+    export = tmp_path / "sessions.jsonl"
+    plan = tmp_path / "plan.json"
+    export.write_text(json.dumps({
+        "id": "s1", "profile_name": "default", "source": "desktop", "cwd": "/work/project",
+        "messages": [{"id": 1, "role": "user", "content": "Use SQLite for tests."}],
+    }) + "\n", encoding="utf-8")
+    ctx = Context()
+
+    register(ctx)
+    import local_rag.cli as cli
+    export_modes = []
+    managed = tmp_path / "hermes-agent" / "hermes"
+    managed.parent.mkdir()
+    managed.write_text("managed", encoding="utf-8")
+    python = tmp_path / "hermes-agent" / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("python", encoding="utf-8")
+    def fake_export(command, **_kwargs):
+        target = Path(command[4])
+        export_modes.append(target.stat().st_mode & 0o777)
+        target.write_text(export.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(cli.subprocess, "run", fake_export)
+    parser = argparse.ArgumentParser()
+    register_backfill_cli(parser)
+    args = parser.parse_args(["preview", "--plan", str(plan), "--home", str(tmp_path)])
+    assert backfill_command(args, llm=ctx.llm) == 0
+
+    assert isinstance(ctx.provider, LocalRagProvider)
+    assert ctx.command is None
+    assert export_modes == [0o600]
+    assert not list((tmp_path / "local-rag").glob(".backfill-export-*.jsonl"))
+    assert json.loads(plan.read_text())["items"][0]["accepted"] is False
+    call = ctx.llm.calls[0]
+    assert call["schema_name"] == "historical_memory_items"
+    assert call["purpose"] == "selective_historical_memory_backfill"
+    assert call["json_schema"]["type"] == "object"
+    assert "object with an items array" in call["instructions"]
+
+
+def test_standalone_backfill_entrypoints_route_to_selective_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import local_rag.cli as cli
+
+    calls = []
+    monkeypatch.setattr(cli, "local_rag_command", lambda args: calls.append(args) or 0)
+    monkeypatch.setattr(sys, "argv", ["hermes-local-rag-backfill", "apply", "--plan", str(tmp_path / "plan.json"), "--home", str(tmp_path)])
+    assert cli.backfill_main() == 0
+    assert calls[-1].backfill_command == "apply"
+
+    monkeypatch.setattr(sys, "argv", ["hermes-local-rag", "backfill", "apply", "--plan", str(tmp_path / "plan.json"), "--home", str(tmp_path)])
+    assert cli.main() == 0
+    assert calls[-1].backfill_command == "apply"

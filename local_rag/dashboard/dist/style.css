@@ -36,6 +36,16 @@
 .local-rag-progress-bar span { display: block; width: 35%; height: 100%; background: var(--color-primary); }
 .local-rag-progress-bar span.is-running { animation: local-rag-progress 1.2s ease-in-out infinite alternate; }
 .local-rag-progress pre { max-height: 10rem; overflow: auto; margin: 0; padding: .6rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-muted) 50%, transparent); color: var(--color-muted-foreground); font-size: .68rem; white-space: pre-wrap; }
+.local-rag-review { display: flex; flex-direction: column; gap: .7rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: .75rem; }
+.local-rag-review-head { display: flex; justify-content: space-between; gap: 1rem; font-size: .78rem; }
+.local-rag-review-head span { color: var(--color-muted-foreground); }
+.local-rag-candidates { max-height: 24rem; overflow: auto; display: flex; flex-direction: column; gap: .45rem; }
+.local-rag-candidate { display: grid; grid-template-columns: auto 1fr; gap: .6rem; align-items: flex-start; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: .65rem; cursor: pointer; }
+.local-rag-candidate.is-selected { border-color: var(--color-ring); background: color-mix(in srgb, var(--color-ring) 8%, transparent); }
+.local-rag-candidate input { margin-top: .18rem; accent-color: var(--color-ring); }
+.local-rag-candidate-text, .local-rag-candidate-meta { display: block; }
+.local-rag-candidate-text { width: 100%; min-height: 3.8rem; resize: vertical; box-sizing: border-box; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background); color: var(--color-foreground); padding: .45rem .55rem; font: inherit; font-size: .8rem; line-height: 1.45; }
+.local-rag-candidate-meta { margin-top: .25rem; color: var(--color-muted-foreground); font-size: .68rem; }
 @keyframes local-rag-progress { from { transform: translateX(-20%); } to { transform: translateX(210%); } }
 @media (max-width: 800px) { .local-rag-layout { grid-template-columns: 1fr; } .local-rag-status { position: static; } .local-rag-choices { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .local-rag-progress-bar span.is-running { animation: none; width: 100%; opacity: .55; } }

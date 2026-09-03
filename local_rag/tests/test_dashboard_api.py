@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -110,11 +111,75 @@ def test_models_are_fixed_allowlist_and_visual_opt_in(client: TestClient, monkey
     assert api.VISUAL_REPO not in {call[2] for call in calls}
 
 
-def test_backfill_is_disabled_until_selective_extraction_exists(client: TestClient) -> None:
-    assert client.post("/setup/backfill", json={"confirm": False}).status_code == 400
-    response = client.post("/setup/backfill", json={"confirm": True})
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Selective backfill is not available yet; raw session transcripts are never indexed"
+def test_selective_backfill_preview_review_and_apply_are_separate(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = Path(api.os.environ["HERMES_HOME"])
+    commands: list[list[str]] = []
+    monkeypatch.setattr(api.shutil, "which", lambda _: "/managed/hermes")
+
+    def fake_run(command: list[str], job: dict) -> None:
+        commands.append(command)
+        if command[1:3] == ["local_rag", "preview"]:
+            from local_rag.backfill import _seal_item, plan_key
+            plan = Path(command[command.index("--plan") + 1])
+            candidate = {
+                "text": "The project uses SQLite.", "scope": "project", "subject": "database",
+                "durability": "stable", "importance": 0.8, "confidence": 0.9, "tags": [],
+                "namespace": "default:local", "project": "/work/project", "accepted": False,
+                "provenance": {"origin": "historical-extraction", "session_id": "s1", "message_ids": [1]},
+            }
+            _seal_item(candidate, plan_key(home, create=True))
+            plan.write_text(json.dumps({
+                "schema_version": 1, "created_at": 1, "items": [candidate],
+            }), encoding="utf-8")
+
+    monkeypatch.setattr(api, "_run", fake_run)
+    assert client.post("/setup/backfill/preview", json={"confirm": False}).status_code == 400
+    preview = client.post("/setup/backfill/preview", json={"confirm": True})
+    assert preview.status_code == 202
+    assert wait(client, preview.json()["job_id"])["state"] == "complete"
+    assert not list((home / "local-rag").glob(".backfill-export-*.jsonl"))
+    assert not (home / "local-rag" / "memory.sqlite").exists()
+
+    plan = client.get("/setup/backfill/plan")
+    assert plan.status_code == 200
+    assert plan.json()["items"][0]["accepted"] is False
+    review = client.put("/setup/backfill/plan", json={
+        "revision": plan.json()["revision"], "accepted_indices": [0],
+        "edits": {"0": "The edited project memory remains reviewable."},
+    })
+    assert review.status_code == 200
+    assert review.json()["reviewed"] == 1 and review.json()["accepted"] == 1
+    assert client.put("/setup/backfill/plan", json={
+        "revision": plan.json()["revision"], "accepted_indices": [], "edits": {},
+    }).status_code == 409
+    assert client.get("/setup/backfill/plan").json()["items"][0]["text"] == "The edited project memory remains reviewable."
+    assert client.post("/setup/backfill/apply", json={"confirm": False, "revision": review.json()["revision"]}).status_code == 400
+    apply = client.post("/setup/backfill/apply", json={"confirm": True, "revision": review.json()["revision"]})
+    assert apply.status_code == 202
+    assert wait(client, apply.json()["job_id"])["state"] == "complete"
+    assert commands[-1][1:3] == ["local_rag", "apply"]
+    assert ".backfill-apply-" in commands[-1][commands[-1].index("--plan") + 1]
+
+
+def test_backfill_plan_operations_are_blocked_while_preview_runs(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(api.shutil, "which", lambda _: "/managed/hermes")
+
+    def blocked_run(_command: list[str], _job: dict) -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(api, "_run", blocked_run)
+    response = client.post("/setup/backfill/preview", json={"confirm": True})
+    assert response.status_code == 202 and started.wait(timeout=2)
+    assert client.get("/setup/backfill/plan").status_code == 409
+    assert client.put("/setup/backfill/plan", json={"revision": "stale", "accepted_indices": [], "edits": {}}).status_code == 409
+    assert client.post("/setup/backfill/apply", json={"confirm": True, "revision": "stale"}).status_code == 409
+    release.set()
+    assert wait(client, response.json()["job_id"])["state"] == "failed"
 
 
 def test_activation_requires_confirmation(client: TestClient) -> None:
@@ -211,10 +276,10 @@ def test_completed_job_history_is_bounded(client: TestClient) -> None:
 
 def test_dashboard_ui_uses_protected_setup_contract() -> None:
     script = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
-    for route in ("/setup/status", "/setup/progress", "/setup/auth", "/setup/dependencies", "/setup/models", "/setup/config", "/setup/activate"):
+    for route in ("/setup/status", "/setup/progress", "/setup/auth", "/setup/dependencies", "/setup/models", "/setup/config", "/setup/activate", "/setup/backfill/preview", "/setup/backfill/plan", "/setup/backfill/apply"):
         assert route in script
-    assert '"/setup/backfill"' not in script
-    assert "Raw transcript import is disabled" in script
+    assert "Raw transcripts are deleted after extraction" in script
+    assert "Apply accepted memories" in script
     assert "Sign in from a terminal" not in script
     assert "hf auth login" not in script
     assert 'terms_accepted: acceptedTerms' in script

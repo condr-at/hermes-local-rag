@@ -8,6 +8,7 @@ Private, fully local hybrid text and visual memory for [Hermes Agent](https://gi
 - SQLite + FTS5 + vector similarity, score thresholds, freshness/importance boosts, source diversity, and bounded context injection
 - Physical profile/user namespaces before retrieval
 - Explicit contextual admission through `local_rag_remember`, with normalized atomic items instead of raw turns
+- Selective historical backfill with pre-LLM filtering, structured extraction, resumable preview, human review, and explicit apply
 - Independent scope, durability, status, confidence, importance, provenance, deduplication, deletion, migrations, and backups
 - Project- and session-aware retrieval boundaries; built-in Markdown memory is mirrored as global durable context
 - Project-root-confined text-file indexing with secret and prompt-injection rejection
@@ -24,8 +25,9 @@ Prerequisite: an existing Hermes Agent installation.
 4. Click **Install dependencies**.
 5. Open and accept the required Gemma Terms, create a read-only Hugging Face token, paste it into the password field, and click **Sign in**.
 6. Choose **Text only** or **Text + visual**, then click **Download selected models**.
-7. Save the memory settings and click **Activate Local RAG**.
-8. Click **Run health check**.
+7. Optionally create a historical preview, edit and accept individual candidates, then explicitly apply the reviewed subset.
+8. Save the memory settings and click **Activate Local RAG**.
+9. Click **Run health check**.
 
 The dashboard never displays or logs the Hugging Face token. Model downloads and setup subprocesses use fixed argument lists and a controlled environment rather than a user shell. Gemma Terms acceptance is explicit and cannot be bypassed by the installer.
 
@@ -73,7 +75,17 @@ Then restart the gateway, or start a new Desktop session.
 
 ## Backfill
 
-Raw transcript backfill is disabled. Historical sessions require a separate selective extraction pass that produces normalized memory items; importing user turns or extractive transcript summaries directly would recreate the noise this provider is designed to avoid.
+Raw transcript backfill is disabled. Historical sessions pass through role filtering, credential and prompt-injection rejection, bounded structured extraction, and strict validation. Preview writes only a mode-`0600` review artifact; every candidate starts rejected, and only explicitly accepted items can be applied. Namespace, project, session, timestamps, and source-message provenance come from the trusted export rather than the model.
+
+The Dashboard owns the normal preview → edit/accept → apply flow. The equivalent recovery CLI is:
+
+```bash
+hermes local_rag preview --plan /path/to/review.json
+# Edit only accepted flags/text after reviewing the artifact.
+hermes local_rag apply --plan /path/to/review.json
+```
+
+Preview is resumable by session and never writes the memory database. Re-applying a reviewed plan is idempotent through scope-aware exact deduplication.
 
 ## Maintenance
 

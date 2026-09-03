@@ -6,20 +6,26 @@ filesystem/process state; it never treats starting a command as success.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
+
+from ..backfill import plan_key, validate_plan_payload
+from ..policy import IngestDecision, classify_text
 
 router = APIRouter()
 _LOCK = threading.Lock()
+_PLAN_LOCK = threading.Lock()
 _JOBS: dict[str, dict[str, Any]] = {}
 _PROGRESS_LOCK = _LOCK
 _PROGRESS = _JOBS
@@ -31,7 +37,7 @@ VISUAL_REPO = "Xenova/clip-vit-base-patch32"
 TEXT_FILES = ["embeddinggemma-300M_seq512_mixed-precision.tflite"]
 TOKENIZER_FILES = ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"]
 VISUAL_FILES = ["onnx/vision_model_quantized.onnx", "onnx/text_model_quantized.onnx", "tokenizer.json", "tokenizer_config.json", "config.json", "preprocessor_config.json"]
-DEPENDENCIES = ["numpy>=2.0,<3", "tokenizers>=0.22,<1", "Pillow>=11,<13", "onnxruntime>=1.20,<2", "ai-edge-litert>=2.1,<3", "huggingface-hub>=0.34,<2"]
+DEPENDENCIES = ["numpy>=2.0,<3", "tokenizers>=0.22,<1", "Pillow>=11,<13", "onnxruntime>=1.20,<2", "ai-edge-litert>=2.1,<3", "huggingface-hub>=0.34,<2", "jsonschema>=4,<5"]
 
 
 def _home() -> Path:
@@ -186,6 +192,17 @@ class ConfirmRequest(BaseModel):
     confirm: bool = False
 
 
+class BackfillReviewRequest(BaseModel):
+    revision: str
+    accepted_indices: list[int]
+    edits: dict[int, str] = Field(default_factory=dict)
+
+
+class BackfillApplyRequest(BaseModel):
+    confirm: bool = False
+    revision: str
+
+
 class AuthRequest(BaseModel):
     token: SecretStr
 
@@ -308,11 +325,138 @@ def setup_config(request: SetupConfigRequest):
     return {"saved": True, "config": payload, "reindex_performed": False}
 
 
+def _backfill_plan_path() -> Path:
+    return _home() / "local-rag" / "backfill-plan.json"
+
+
+def _read_backfill_plan() -> dict[str, Any]:
+    path = _backfill_plan_path()
+    if not path.is_file() or path.stat().st_size > 20_000_000:
+        raise HTTPException(404, "No selective backfill preview exists")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, "Selective backfill preview is invalid") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1 or not isinstance(payload.get("items"), list):
+        raise HTTPException(409, "Selective backfill preview is invalid")
+    try:
+        validate_plan_payload(payload, plan_key(_home(), create=False))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, "Selective backfill preview failed trust validation") from exc
+    return payload
+
+
+def _plan_revision(payload: dict[str, Any]) -> str:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _reject_during_backfill_preview() -> None:
+    with _LOCK:
+        if any(job["state"] == "running" and job["kind"] == "backfill-preview" for job in _JOBS.values()):
+            raise HTTPException(409, "Backfill preview is running; retry after it completes")
+
+
+@router.post("/setup/backfill/preview", status_code=202)
 @router.post("/setup/backfill", status_code=202)
-def setup_backfill(request: ConfirmRequest):
+def setup_backfill_preview(request: ConfirmRequest):
     if not request.confirm:
-        raise HTTPException(400, "Backfill requires explicit confirmation")
-    raise HTTPException(409, "Selective backfill is not available yet; raw session transcripts are never indexed")
+        raise HTTPException(400, "Backfill preview requires explicit confirmation")
+    hermes = shutil.which("hermes")
+    if not hermes:
+        raise HTTPException(409, "Hermes CLI was not found on PATH")
+
+    def worker(job):
+        folder = _home() / "local-rag"
+        folder.mkdir(parents=True, exist_ok=True)
+        plan = _backfill_plan_path()
+        _run([hermes, "local_rag", "preview", "--plan", str(plan), "--home", str(_home())], job)
+        if not plan.is_file():
+            raise RuntimeError("Backfill preview command did not create a review plan")
+        os.chmod(plan, 0o600)
+    with _PLAN_LOCK:
+        return _start("backfill-preview", worker)
+
+
+@router.get("/setup/backfill/plan")
+def get_backfill_plan():
+    with _PLAN_LOCK:
+        _reject_during_backfill_preview()
+        payload = _read_backfill_plan()
+        return {"created_at": payload.get("created_at"), "revision": _plan_revision(payload), "items": payload["items"]}
+
+
+@router.put("/setup/backfill/plan")
+def review_backfill_plan(request: BackfillReviewRequest):
+    with _PLAN_LOCK:
+        _reject_during_backfill_preview()
+        payload = _read_backfill_plan()
+        if request.revision != _plan_revision(payload):
+            raise HTTPException(409, "Backfill plan changed; refresh before reviewing")
+        accepted = set(request.accepted_indices)
+        if any(not isinstance(index, int) or index < 0 or index >= len(payload["items"]) for index in accepted):
+            raise HTTPException(422, "accepted_indices contains an unknown candidate")
+        if any(index < 0 or index >= len(payload["items"]) for index in request.edits):
+            raise HTTPException(422, "edits contains an unknown candidate")
+        for index, text in request.edits.items():
+            cleaned = " ".join(text.split())
+            if len(cleaned) > 2000 or classify_text(cleaned) is not IngestDecision.INDEX:
+                raise HTTPException(422, "edited candidate text is invalid or unsafe")
+            payload["items"][index]["text"] = cleaned
+        for index, item in enumerate(payload["items"]):
+            if not isinstance(item, dict):
+                raise HTTPException(409, "Selective backfill preview is invalid")
+            item["accepted"] = index in accepted
+        path = _backfill_plan_path()
+        _write_private_json(path, payload)
+        return {"reviewed": len(payload["items"]), "accepted": len(accepted), "revision": _plan_revision(payload)}
+
+
+@router.post("/setup/backfill/apply", status_code=202)
+def apply_backfill_plan(request: BackfillApplyRequest):
+    if not request.confirm:
+        raise HTTPException(400, "Backfill apply requires explicit confirmation")
+    hermes = shutil.which("hermes")
+    if not hermes:
+        raise HTTPException(409, "Hermes CLI was not found on PATH")
+    snapshot: Path | None = None
+    def worker(job):
+        assert snapshot is not None
+        try:
+            _run([hermes, "local_rag", "apply", "--plan", str(snapshot), "--home", str(_home())], job)
+        finally:
+            snapshot.unlink(missing_ok=True)
+
+    with _PLAN_LOCK:
+        _reject_during_backfill_preview()
+        payload = _read_backfill_plan()
+        if request.revision != _plan_revision(payload):
+            raise HTTPException(409, "Backfill plan changed; refresh before applying")
+        snapshot = _backfill_plan_path().with_name(f".backfill-apply-{uuid.uuid4().hex}.json")
+        descriptor = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        try:
+            return _start("backfill-apply", worker)
+        except Exception:
+            snapshot.unlink(missing_ok=True)
+            raise
 
 
 def activate():

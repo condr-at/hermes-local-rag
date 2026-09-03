@@ -43,6 +43,8 @@
     const [dimensions, setDimensions] = useState("512");
     const [retention, setRetention] = useState("forever");
     const [days, setDays] = useState("90");
+    const [backfillPlan, setBackfillPlan] = useState(null);
+    const [acceptedBackfill, setAcceptedBackfill] = useState([]);
 
     const [acceptedTerms, setAcceptedTerms] = useState(false);
     const [hfToken, setHfToken] = useState("");
@@ -63,6 +65,13 @@
       }).catch(function (e) { setMessage({ ok: false, text: "Could not load setup status: " + errorText(e) }); });
     }, []);
 
+    const loadBackfillPlan = useCallback(function () {
+      return SDK.fetchJSON(API + "/setup/backfill/plan").then(function (data) {
+        setBackfillPlan(data);
+        setAcceptedBackfill((data.items || []).map(function (item, index) { return item.accepted ? index : -1; }).filter(function (index) { return index >= 0; }));
+      }).catch(function () { setBackfillPlan(null); setAcceptedBackfill([]); });
+    }, []);
+
     useEffect(function () { refresh(); }, [refresh]);
     useEffect(function () {
       if (!job || job.state !== "running") return undefined;
@@ -73,11 +82,12 @@
             setBusy(null);
             setMessage({ ok: next.state === "complete", text: next.state === "complete" ? "Operation completed successfully." : next.detail });
             refresh();
+            if (next.state === "complete" && next.kind === "backfill-preview") loadBackfillPlan();
           }
         }).catch(function (e) { setBusy(null); setMessage({ ok: false, text: errorText(e) }); });
       }, 1500);
       return function () { window.clearInterval(timer); };
-    }, [job && job.id, job && job.state, refresh]);
+    }, [job && job.id, job && job.state, refresh, loadBackfillPlan]);
 
     function action(label, path, options) {
       setBusy(label); setMessage(null);
@@ -106,6 +116,59 @@
       }).catch(function (e) {
         setHfToken(""); setBusy(null);
         setMessage({ ok: false, text: errorText(e) });
+      });
+    }
+
+    function previewBackfill() {
+      return action("Create backfill preview", "/setup/backfill/preview", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true })
+      });
+    }
+
+    function toggleBackfill(index) {
+      setAcceptedBackfill(function (current) {
+        return current.indexOf(index) >= 0 ? current.filter(function (value) { return value !== index; }) : current.concat([index]);
+      });
+    }
+
+    function editBackfill(index, text) {
+      setBackfillPlan(function (current) {
+        return { ...current, items: current.items.map(function (item, itemIndex) {
+          return itemIndex === index ? { ...item, text: text } : item;
+        }) };
+      });
+    }
+
+    function persistBackfillReview() {
+      return SDK.fetchJSON(API + "/setup/backfill/plan", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+          revision: backfillPlan.revision,
+          accepted_indices: acceptedBackfill,
+          edits: Object.fromEntries(backfillPlan.items.map(function (item, index) { return [index, item.text]; }))
+        })
+      }).then(function (result) {
+        setBackfillPlan(function (current) { return { ...current, revision: result.revision }; });
+        return result;
+      });
+    }
+
+    function saveBackfillReview() {
+      setBusy("Save backfill review"); setMessage(null);
+      return persistBackfillReview().then(function () {
+        setBusy(null); setMessage({ ok: true, text: "Backfill review saved." });
+      }).catch(function (e) { setBusy(null); setMessage({ ok: false, text: errorText(e) }); });
+    }
+
+    function applyBackfill() {
+      setBusy("Apply reviewed memories"); setMessage(null);
+      return persistBackfillReview().then(function (review) {
+        return SDK.fetchJSON(API + "/setup/backfill/apply", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true, revision: review.revision })
+        });
+      }).then(function (result) {
+        setJob({ id: result.job_id, state: "running", detail: "Starting…", log: "" });
+      }).catch(function (e) {
+        setBusy(null); setMessage({ ok: false, text: errorText(e) });
       });
     }
 
@@ -186,7 +249,35 @@
           ),
           h(Card, null, h(CardHeader, null, h("div", { className: "local-rag-step-head" }, h(Badge, null, "4"), h(CardTitle, null, "Optional session backfill"))),
             h(CardContent, { className: "local-rag-stack" },
-              h("p", { className: "text-sm" }, "Raw transcript import is disabled. Selective historical extraction will be added separately so low-value messages and assistant output never become memory items.")
+              h("p", { className: "text-sm text-muted-foreground" }, "Hermes extracts normalized reusable facts into a review plan. Raw transcripts are deleted after extraction and never written to memory."),
+              h("div", { className: "local-rag-actions" },
+                h(Button, { onClick: previewBackfill, disabled: !!busy }, "Create selective preview"),
+                h(Button, { variant: "outline", onClick: loadBackfillPlan, disabled: !!busy }, "Load existing preview")
+              ),
+              backfillPlan ? h("div", { className: "local-rag-review" },
+                h("div", { className: "local-rag-review-head" },
+                  h("strong", null, String(backfillPlan.items.length) + " candidates"),
+                  h("span", null, String(acceptedBackfill.length) + " accepted")
+                ),
+                backfillPlan.items.length ? h("div", { className: "local-rag-candidates" }, backfillPlan.items.map(function (item, index) {
+                  const checked = acceptedBackfill.indexOf(index) >= 0;
+                  return h("div", { className: "local-rag-candidate" + (checked ? " is-selected" : ""), key: index },
+                    h("input", { type: "checkbox", checked: checked, onChange: function () { toggleBackfill(index); }, "aria-label": "Accept candidate " + (index + 1) }),
+                    h("span", null,
+                      h("textarea", { className: "local-rag-candidate-text", value: item.text, rows: 3, onChange: function (event) { editBackfill(index, event.target.value); } }),
+                      h("span", { className: "local-rag-candidate-meta" }, item.scope + " · " + item.subject + " · confidence " + Math.round(item.confidence * 100) + "%")
+                    )
+                  );
+                })) : h("p", { className: "text-sm text-muted-foreground" }, "No reusable memories were found."),
+                h("div", { className: "local-rag-actions" },
+                  h(Button, { variant: "outline", onClick: saveBackfillReview, disabled: !!busy }, "Save review"),
+                  h(Button, { onClick: applyBackfill, disabled: !!busy || acceptedBackfill.length === 0 }, "Apply accepted memories")
+                )
+              ) : null,
+              job && (job.kind === "backfill-preview" || job.kind === "backfill-apply") ? h("div", { className: "local-rag-progress" },
+                h("div", { className: "local-rag-progress-bar" }, h("span", { className: job.state === "running" ? "is-running" : "" })),
+                h("p", null, job.detail)
+              ) : null
             )
           ),
           h(Card, null, h(CardHeader, null, h("div", { className: "local-rag-step-head" }, h(Badge, null, "5"), h(CardTitle, null, "Activate and verify"))),
