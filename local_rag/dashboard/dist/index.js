@@ -24,10 +24,13 @@
     );
   }
 
-  function ChoiceButton(props) {
-    return h(Button, { type: "button", variant: props.selected ? "default" : "outline", onClick: props.onClick, className: "local-rag-choice" },
-      h("span", { className: "local-rag-choice-title" }, props.title),
-      h("span", { className: "local-rag-choice-copy" }, props.copy)
+  function RadioChoice(props) {
+    return h("label", { className: "local-rag-radio-choice" + (props.checked ? " is-selected" : "") },
+      h("input", { type: "radio", name: props.name, value: props.value, checked: props.checked, onChange: props.onChange }),
+      h("span", { className: "local-rag-radio-content" },
+        h("span", { className: "local-rag-choice-title" }, props.title),
+        props.copy ? h("span", { className: "local-rag-choice-copy" }, props.copy) : null
+      )
     );
   }
 
@@ -40,7 +43,7 @@
     const [dimensions, setDimensions] = useState("512");
     const [retention, setRetention] = useState("forever");
     const [days, setDays] = useState("90");
-    const [allowBackfill, setAllowBackfill] = useState(false);
+
     const [acceptedTerms, setAcceptedTerms] = useState(false);
     const [hfToken, setHfToken] = useState("");
     const initialized = useRef(false);
@@ -154,8 +157,8 @@
           h(Card, null, h(CardHeader, null, h("div", { className: "local-rag-step-head" }, h(Badge, null, "2"), h(CardTitle, null, "Choose and download models"))),
             h(CardContent, { className: "local-rag-stack" },
               h("div", { className: "local-rag-choices" },
-                h(ChoiceButton, { selected: mode === "text", title: "Text only", copy: "EmbeddingGemma for messages, summaries, and files.", onClick: function () { setMode("text"); } }),
-                h(ChoiceButton, { selected: mode === "visual", title: "Text + visual", copy: "Adds CLIP image search in a separate vector space.", onClick: function () { setMode("visual"); } })
+                h(RadioChoice, { name: "local-rag-model-mode", value: "text", checked: mode === "text", title: "Text only", copy: "EmbeddingGemma for messages, summaries, and files.", onChange: function () { setMode("text"); } }),
+                h(RadioChoice, { name: "local-rag-model-mode", value: "visual", checked: mode === "visual", title: "Text + visual", copy: "Adds CLIP image search in a separate vector space.", onChange: function () { setMode("visual"); } })
               ),
               h(Button, { onClick: function () { action("Download models", "/setup/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ visual: mode === "visual", terms_accepted: acceptedTerms }) }); }, disabled: !!busy || !acceptedTerms || !status.hf.authenticated || (status.text_model_downloaded && (mode === "text" || status.visual_model_downloaded)) }, downloading ? "Downloading…" : "Download selected models"),
               job && job.kind === "download" ? h("div", { className: "local-rag-progress" },
@@ -171,9 +174,9 @@
                   ["256", "512", "768"].map(function (v) { return h(SelectOption, { key: v, value: v }, v + (v === "512" ? " (recommended)" : "")); }))
               ),
               h("div", { className: "local-rag-field" }, h(Label, null, "Retention"),
-                h("div", { className: "local-rag-actions" },
-                  h(Button, { variant: retention === "forever" ? "default" : "outline", onClick: function () { setRetention("forever"); } }, "Forever"),
-                  h(Button, { variant: retention === "custom" ? "default" : "outline", onClick: function () { setRetention("custom"); } }, "Custom")
+                h("div", { className: "local-rag-radio-row" },
+                  h(RadioChoice, { name: "local-rag-retention", value: "forever", checked: retention === "forever", title: "Forever", onChange: function () { setRetention("forever"); } }),
+                  h(RadioChoice, { name: "local-rag-retention", value: "custom", checked: retention === "custom", title: "Custom", onChange: function () { setRetention("custom"); } })
                 ),
                 retention === "custom" ? h(Input, { type: "number", min: "1", value: days, onChange: function (e) { setDays(e.target.value); }, "aria-label": "Retention days", placeholder: "Days" }) : null
               ),
@@ -183,9 +186,7 @@
           ),
           h(Card, null, h(CardHeader, null, h("div", { className: "local-rag-step-head" }, h(Badge, null, "4"), h(CardTitle, null, "Optional session backfill"))),
             h(CardContent, { className: "local-rag-stack" },
-              h("label", { className: "local-rag-consent" }, h("input", { type: "checkbox", checked: allowBackfill, onChange: function (e) { setAllowBackfill(e.target.checked); } }), h("span", null, "I want to import prior sessions using Hermes’ official redacted export.")),
-              h("p", { className: "text-xs text-muted-foreground" }, "Backfill is never automatic. Temporary exports are deleted by the backfill command."),
-              h(Button, { variant: "outline", disabled: !!busy || !allowBackfill, onClick: function () { action("Backfill sessions", "/setup/backfill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) }); } }, busy === "Backfill sessions" ? "Backfilling…" : "Run explicit backfill")
+              h("p", { className: "text-sm" }, "Raw transcript import is disabled. Selective historical extraction will be added separately so low-value messages and assistant output never become memory items.")
             )
           ),
           h(Card, null, h(CardHeader, null, h("div", { className: "local-rag-step-head" }, h(Badge, null, "5"), h(CardTitle, null, "Activate and verify"))),

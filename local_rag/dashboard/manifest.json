@@ -1,12 +1,14 @@
 {
-  "name": "local-rag",
+  "name": "local_rag",
   "label": "Local RAG",
   "description": "Install and configure private local text and visual memory",
   "icon": "Database",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "tab": {
     "path": "/local-rag",
     "position": "after:memory"
   },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
   "api": "plugin_api.py"
 }

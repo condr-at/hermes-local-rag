@@ -308,27 +308,11 @@ def setup_config(request: SetupConfigRequest):
     return {"saved": True, "config": payload, "reindex_performed": False}
 
 
-def backfill():
-    if not _python().is_file():
-        raise HTTPException(409, "Hermes Python environment was not found")
-    env = _clean_env(include_plugin=True)
-    return _start("backfill", lambda job: _run_env([str(_python()), "-m", "local_rag.backfill"], job, env))
-
 @router.post("/setup/backfill", status_code=202)
 def setup_backfill(request: ConfirmRequest):
     if not request.confirm:
         raise HTTPException(400, "Backfill requires explicit confirmation")
-    return backfill()
-
-
-def _run_env(command: list[str], job: dict[str, Any], env: dict[str, str]) -> None:
-    job["detail"] = "Backfilling redacted session exports"
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    assert proc.stdout is not None
-    for _line in proc.stdout:
-        pass  # Never expose command output; it may contain tokens or user IDs.
-    if proc.wait():
-        raise RuntimeError("Backfill failed. See job log for details.")
+    raise HTTPException(409, "Selective backfill is not available yet; raw session transcripts are never indexed")
 
 
 def activate():

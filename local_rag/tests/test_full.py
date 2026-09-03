@@ -5,6 +5,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
@@ -12,6 +14,7 @@ from local_rag.chunking import chunk_text
 from local_rag.config import LocalRagConfig
 from local_rag.extraction import extract_candidates, summarize_session
 from local_rag import LocalRagProvider
+from local_rag.backfill import import_full_export
 from local_rag.service import LocalRagService
 from local_rag.sessions import import_session_jsonl
 from local_rag.store import MemoryStore
@@ -124,7 +127,7 @@ def test_file_index_replaces_stale_chunks_and_blocks_env(tmp_path: Path) -> None
         raise AssertionError(".env must not be indexed")
 
 
-def test_provider_lifecycle_creates_summary_and_review_candidate(tmp_path: Path) -> None:
+def test_provider_lifecycle_does_not_create_implicit_memory(tmp_path: Path) -> None:
     provider = LocalRagProvider(embedder=FakeEmbedder())
     provider.initialize(
         "session-a",
@@ -134,19 +137,14 @@ def test_provider_lifecycle_creates_summary_and_review_candidate(tmp_path: Path)
         agent_context="primary",
         cwd=str(tmp_path),
     )
-    provider.sync_turn("I prefer guitar notes in concise replies.", "Understood.", session_id="session-a")
-    pending = json.loads(provider.handle_tool_call("local_rag_review", {}))["candidates"]
-    assert pending
-    assert json.loads(provider.handle_tool_call("local_rag_approve", {"id": pending[0]["id"]})) == {"promoted": True}
-
     provider.on_session_end([
         {"role": "user", "content": "Help with my guitar."},
         {"role": "assistant", "content": "Check the neck relief."},
     ], session_id="session-a")
 
-    results = json.loads(provider.handle_tool_call("local_rag_search", {"query": "guitar"}))["results"]
-    assert any(item["kind"] == "durable" for item in results)
-    assert any(item["kind"] == "summary" for item in results)
+    status = json.loads(provider.handle_tool_call("local_rag_status", {}))
+    assert status["entries"] == 0
+    assert status["pending_review"] == 0
 
 
 def test_provider_file_index_tool_is_confined_to_cwd(tmp_path: Path) -> None:
@@ -169,7 +167,21 @@ def test_provider_file_index_tool_is_confined_to_cwd(tmp_path: Path) -> None:
     assert "error" in blocked
 
 
-def test_redacted_session_export_can_be_backfilled(tmp_path: Path) -> None:
+def test_nested_project_file_remains_visible_to_project_search(tmp_path: Path) -> None:
+    nested = tmp_path / "docs"
+    nested.mkdir()
+    document = nested / "architecture.md"
+    document.write_text("The Python index uses an immutable segment map.", encoding="utf-8")
+    store = MemoryStore(tmp_path / "memory.sqlite", dimensions=3)
+    service = LocalRagService(
+        store=store, embedder=FakeEmbedder(), namespace="owner", allowed_roots=[tmp_path]
+    )
+
+    assert service.index_path(document) == 1
+    assert service.search("Python index")
+
+
+def test_raw_session_export_is_rejected(tmp_path: Path) -> None:
     export = tmp_path / "sessions.jsonl"
     export.write_text(
         json.dumps({"session_id": "abc", "message_id": 7, "role": "user", "text": "My guitar uses a maple neck."}) + "\n"
@@ -177,11 +189,18 @@ def test_redacted_session_export_can_be_backfilled(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "memory.sqlite", dimensions=3)
     service = LocalRagService(store=store, embedder=FakeEmbedder(), namespace="owner", allowed_roots=[tmp_path])
 
-    imported = import_session_jsonl(export, service)
+    with pytest.raises(ValueError, match="Selective extraction"):
+        import_session_jsonl(export, service)
 
-    assert imported == 1
-    result = service.search("guitar")[0]
-    assert result.source == "session:abc:message:7"
+    assert service.search("guitar") == []
+
+
+def test_full_raw_export_backfill_is_rejected(tmp_path: Path) -> None:
+    export = tmp_path / "sessions.jsonl"
+    export.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Selective historical extraction"):
+        import_full_export(export, hermes_home=tmp_path)
 
 
 def test_legacy_database_is_backed_up_before_migration(tmp_path: Path) -> None:

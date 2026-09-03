@@ -7,9 +7,9 @@ Private, fully local hybrid text and visual memory for [Hermes Agent](https://gi
 - EmbeddingGemma 300M through LiteRT/XNNPACK, with configurable 128/256/512/768-dimensional Matryoshka embeddings (512d default)
 - SQLite + FTS5 + vector similarity, score thresholds, freshness/importance boosts, source diversity, and bounded context injection
 - Physical profile/user namespaces before retrieval
-- Episodic memory, extractive session summaries, durable-memory review queue, provenance, deletion, migrations, and backups
-- Infinite retention by default; independent episodic and summary TTL settings
-- Redacted Hermes session backfill without reading internal `state.db` tables
+- Explicit contextual admission through `local_rag_remember`, with normalized atomic items instead of raw turns
+- Independent scope, durability, status, confidence, importance, provenance, deduplication, deletion, migrations, and backups
+- Project- and session-aware retrieval boundaries; built-in Markdown memory is mirrored as global durable context
 - Project-root-confined text-file indexing with secret and prompt-injection rejection
 - Optional CLIP ViT-B/32 ONNX visual index in a separate 512d vector space
 - Button-driven setup inside Hermes Dashboard; no model server, vector database server, or Hermes core patch
@@ -24,7 +24,7 @@ Prerequisite: an existing Hermes Agent installation.
 4. Click **Install dependencies**.
 5. Open and accept the required Gemma Terms, create a read-only Hugging Face token, paste it into the password field, and click **Sign in**.
 6. Choose **Text only** or **Text + visual**, then click **Download selected models**.
-7. Save the memory settings, optionally approve redacted session backfill, and click **Activate Local RAG**.
+7. Save the memory settings and click **Activate Local RAG**.
 8. Click **Run health check**.
 
 The dashboard never displays or logs the Hugging Face token. Model downloads and setup subprocesses use fixed argument lists and a controlled environment rather than a user shell. Gemma Terms acceptance is explicit and cannot be bypassed by the installer.
@@ -73,11 +73,7 @@ Then restart the gateway, or start a new Desktop session.
 
 ## Backfill
 
-```bash
-PYTHONPATH="$HOME/.hermes/plugins" "$HOME/.hermes/hermes-agent/venv/bin/python" -m local_rag.backfill
-```
-
-Backfill asks Hermes for an official redacted JSONL export, routes records by profile and platform user, indexes user messages plus extractive summaries, and deletes the temporary export.
+Raw transcript backfill is disabled. Historical sessions require a separate selective extraction pass that produces normalized memory items; importing user turns or extractive transcript summaries directly would recreate the noise this provider is designed to avoid.
 
 ## Maintenance
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import json
+import sqlite3
 from pathlib import Path
 import pytest
 
@@ -84,7 +85,7 @@ def test_weak_semantic_match_is_not_returned(tmp_path: Path) -> None:
     assert store.search("owner", "guitar", [1.0, 0.0, 0.0]) == []
 
 
-def test_provider_syncs_user_turn_and_prefetches_recall(tmp_path: Path) -> None:
+def test_local_rag_remember_stores_atomic_item_with_runtime_provenance(tmp_path: Path) -> None:
     provider = LocalRagProvider(embedder=FakeEmbedder())
     provider.initialize(
         "session-a",
@@ -92,17 +93,38 @@ def test_provider_syncs_user_turn_and_prefetches_recall(tmp_path: Path) -> None:
         agent_identity="default",
         user_id="owner",
         agent_context="primary",
+        cwd=str(tmp_path / "project"),
     )
 
-    provider.sync_turn(
-        "My favorite guitar is a Telecaster.",
-        "That is useful to know.",
-        session_id="session-a",
-    )
-    recall = provider.prefetch("Which guitar do I prefer?", session_id="session-b")
+    result = json.loads(provider.handle_tool_call("local_rag_remember", {
+        "text": "The project uses Python for its indexing pipeline.",
+        "scope": "project",
+        "subject": "indexing pipeline",
+        "durability": "stable",
+        "importance": 0.8,
+        "confidence": 0.95,
+        "tags": ["python", "indexing"],
+    }))
+    recall = provider.prefetch("Which language powers the Python pipeline?", session_id="session-b")
 
-    assert "My favorite guitar is a Telecaster." in recall
-    assert "session:session-a" in recall
+    assert result["stored"] is True
+    assert "The project uses Python for its indexing pipeline." in recall
+    assert "agent:session-a" in recall
+
+    connection = sqlite3.connect(tmp_path / "local-rag" / "memory.sqlite")
+    row = connection.execute("SELECT kind, project, metadata_json FROM memories").fetchone()
+    connection.close()
+    metadata = json.loads(row[2])
+    assert row[0] == "memory_item"
+    assert row[1] == str((tmp_path / "project").resolve())
+    assert metadata == {
+        "scope": "project",
+        "subject": "indexing pipeline",
+        "durability": "stable",
+        "confidence": 0.95,
+        "tags": ["python", "indexing"],
+        "session_id": "session-a",
+    }
 
 
 def test_provider_does_not_write_from_non_primary_agent(tmp_path: Path) -> None:
@@ -120,6 +142,63 @@ def test_provider_does_not_write_from_non_primary_agent(tmp_path: Path) -> None:
     assert provider.prefetch("coffee", session_id="parent") == ""
 
 
+def test_provider_does_not_index_raw_turn_without_explicit_memory_item(tmp_path: Path) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+        user_id="owner",
+        agent_context="primary",
+    )
+
+    provider.sync_turn(
+        "My favorite guitar is a Telecaster and this sentence looks memorable.",
+        "Understood.",
+        session_id="session-a",
+    )
+
+    assert json.loads(provider.handle_tool_call("local_rag_status", {}))["entries"] == 0
+    assert json.loads(provider.handle_tool_call("local_rag_review", {}))["candidates"] == []
+
+
+def test_provider_does_not_store_extractive_session_summaries(tmp_path: Path) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+        user_id="owner",
+        agent_context="primary",
+    )
+    messages = [
+        {"role": "user", "content": "Please diagnose the Python indexing problem."},
+        {"role": "assistant", "content": "The worker used the wrong configuration file."},
+    ]
+
+    provider.on_pre_compress(messages, session_id="session-a")
+    provider.on_session_end(messages, session_id="session-a")
+
+    assert json.loads(provider.handle_tool_call("local_rag_status", {}))["entries"] == 0
+
+
+def test_provider_does_not_expose_raw_session_import_tool() -> None:
+    names = {schema["name"] for schema in LocalRagProvider(embedder=FakeEmbedder()).get_tool_schemas()}
+
+    assert "local_rag_remember" in names
+    assert "local_rag_import_sessions" not in names
+
+
+def test_provider_prompt_separates_rag_items_from_markdown_memory() -> None:
+    prompt = LocalRagProvider(embedder=FakeEmbedder()).system_prompt_block()
+
+    assert "local_rag_remember" in prompt
+    assert "high recall" in prompt
+    assert "Markdown memory" in prompt
+    assert "cross-project" in prompt
+    assert "raw transcript" in prompt
+
+
 def test_builtin_memory_write_is_mirrored_into_semantic_index(tmp_path: Path) -> None:
     provider = LocalRagProvider(embedder=FakeEmbedder())
     provider.initialize(
@@ -133,6 +212,146 @@ def test_builtin_memory_write_is_mirrored_into_semantic_index(tmp_path: Path) ->
     provider.on_memory_write("add", "user", "User prefers black coffee every morning.")
 
     assert "black coffee" in provider.prefetch("coffee preference")
+
+
+def test_builtin_memory_remove_deletes_mirrored_rag_item(tmp_path: Path) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary",
+    )
+    provider.on_memory_write("add", "user", "User prefers black coffee every morning.")
+
+    provider.on_memory_write("remove", "user", "", metadata={"old_text": "BLACK COFFEE"})
+
+    assert provider.prefetch("coffee preference") == ""
+
+
+def test_project_scoped_memory_does_not_cross_project_boundary(tmp_path: Path) -> None:
+    first = LocalRagProvider(embedder=FakeEmbedder())
+    first.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path / "project-a"),
+    )
+    first.handle_tool_call("local_rag_remember", {
+        "text": "The Python service uses a project-specific indexing strategy.",
+        "scope": "project", "subject": "Python service", "durability": "stable",
+    })
+    first.shutdown()
+
+    second = LocalRagProvider(embedder=FakeEmbedder())
+    second.initialize(
+        "session-b", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path / "project-b"),
+    )
+
+    assert second.prefetch("Python indexing strategy") == ""
+
+
+def test_session_scoped_memory_does_not_cross_session_boundary(tmp_path: Path) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path),
+    )
+    provider.handle_tool_call("local_rag_remember", {
+        "text": "The temporary Python diagnosis applies only in this session.",
+        "scope": "session", "subject": "diagnosis", "durability": "transient",
+    })
+
+    assert "temporary Python diagnosis" in provider.prefetch("Python diagnosis", session_id="session-a")
+    assert provider.prefetch("Python diagnosis", session_id="session-b") == ""
+
+
+def test_global_memory_is_visible_across_projects(tmp_path: Path) -> None:
+    first = LocalRagProvider(embedder=FakeEmbedder())
+    first.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path / "project-a"),
+    )
+    first.handle_tool_call("local_rag_remember", {
+        "text": "The user globally prefers Python examples.",
+        "scope": "global", "subject": "user", "durability": "stable",
+    })
+    first.shutdown()
+
+    second = LocalRagProvider(embedder=FakeEmbedder())
+    second.initialize(
+        "session-b", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path / "project-b"),
+    )
+
+    assert "globally prefers Python examples" in second.prefetch("Python examples")
+
+
+def test_memory_item_exact_duplicate_is_not_stored_from_another_session(tmp_path: Path) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path),
+    )
+    item = {
+        "text": "The project uses Python for indexing.",
+        "scope": "project", "subject": "project", "durability": "stable",
+    }
+
+    first = json.loads(provider.handle_tool_call("local_rag_remember", item))
+    provider.on_session_switch("session-b")
+    second = json.loads(provider.handle_tool_call("local_rag_remember", item))
+
+    assert first == {"stored": True}
+    assert second == {"stored": False}
+    assert json.loads(provider.handle_tool_call("local_rag_status", {}))["entries"] == 1
+
+
+def test_same_session_scoped_text_can_be_stored_in_different_sessions(tmp_path: Path) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path),
+    )
+    item = {
+        "text": "The temporary Python diagnosis is still active.",
+        "scope": "session", "subject": "diagnosis", "durability": "transient",
+    }
+    first = json.loads(provider.handle_tool_call("local_rag_remember", item))
+    provider.on_session_switch("session-b")
+    second = json.loads(provider.handle_tool_call("local_rag_remember", item))
+
+    assert first == {"stored": True}
+    assert second == {"stored": True}
+    assert "temporary Python diagnosis" in provider.prefetch("Python diagnosis", session_id="session-b")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"subject": ""},
+        {"text": 123},
+        {"subject": 123},
+        {"tags": "not-an-array"},
+        {"tags": [123]},
+        {"importance": float("nan")},
+    ],
+)
+def test_memory_item_runtime_validation_rejects_malformed_metadata(
+    tmp_path: Path, override: dict,
+) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path),
+    )
+    item = {
+        "text": "The project uses Python for indexing.",
+        "scope": "project", "subject": "project", "durability": "stable",
+        **override,
+    }
+
+    result = json.loads(provider.handle_tool_call("local_rag_remember", item))
+
+    assert "error" in result
+    assert json.loads(provider.handle_tool_call("local_rag_status", {}))["entries"] == 0
 
 
 def test_embeddinggemma_ranks_cross_language_semantic_match() -> None:
@@ -162,7 +381,13 @@ def test_provider_tools_search_and_forget_only_current_namespace(tmp_path: Path)
         user_id="owner",
         agent_context="primary",
     )
-    provider.sync_turn("I prefer maple neck guitars.", "Noted.", session_id="session-a")
+    remembered = json.loads(provider.handle_tool_call("local_rag_remember", {
+        "text": "The user prefers maple neck guitars.",
+        "scope": "global",
+        "subject": "user",
+        "durability": "stable",
+    }))
+    assert remembered == {"stored": True}
 
     found = json.loads(provider.handle_tool_call("local_rag_search", {"query": "guitar"}))
     memory_id = found["results"][0]["id"]

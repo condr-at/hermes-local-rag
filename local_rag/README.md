@@ -20,7 +20,7 @@ Model weights are not distributed by this plugin. EmbeddingGemma remains subject
 
 ## Dashboard setup
 
-After installing the plugin from **Hermes Dashboard → Plugins**, open the **Local RAG** tab. The wizard installs dependencies, accepts a read-only Hugging Face token through a local password field, downloads the selected models, saves retention and embedding settings, optionally runs approved redacted backfill, activates the provider, and performs a health check. No Terminal is required for the normal path.
+After installing the plugin from **Hermes Dashboard → Plugins**, open the **Local RAG** tab. The wizard installs dependencies, accepts a read-only Hugging Face token through a local password field, downloads the selected models, saves retention and embedding settings, activates the provider, and performs a health check. No Terminal is required for the normal path.
 
 The token is passed directly to `huggingface_hub.login`, is never placed in a subprocess argument, response, config file, or setup log, and remains governed by Hugging Face's credential storage. Gemma Terms must still be accepted by the user in the browser.
 
@@ -39,7 +39,7 @@ Hybrid ranking combines semantic similarity, FTS5 exact matches, importance, fre
 
 ## Agent tools
 
-`local_rag_search`, `local_rag_status`, `local_rag_forget`, `local_rag_review`, `local_rag_approve`, `local_rag_reject`, `local_rag_index_file`, `local_rag_import_sessions`, `local_rag_prune`, `local_rag_index_image`, `local_rag_search_images`, `local_rag_forget_image`.
+`local_rag_remember`, `local_rag_search`, `local_rag_status`, `local_rag_forget`, `local_rag_review`, `local_rag_approve`, `local_rag_reject`, `local_rag_index_file`, `local_rag_prune`, `local_rag_index_image`, `local_rag_search_images`, `local_rag_forget_image`.
 
 ## Maintenance CLI
 
@@ -48,10 +48,9 @@ From the Hermes checkout:
 ```sh
 PYTHONPATH="$HOME/.hermes/plugins" venv/bin/python -m local_rag.cli status
 PYTHONPATH="$HOME/.hermes/plugins" venv/bin/python -m local_rag.cli --namespace default:local search "query"
-PYTHONPATH="$HOME/.hermes/plugins" venv/bin/python -m local_rag.backfill
 ```
 
-Backfill creates an official redacted Hermes JSONL export in a temporary directory, routes sessions by profile/user, indexes user messages and extractive summaries, and deletes the temporary export automatically.
+Raw transcript backfill is disabled. Historical sessions must first undergo selective semantic extraction into normalized memory items; raw user turns, assistant output, and extractive summaries are never indexed automatically.
 
 ## Recovery
 

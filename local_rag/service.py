@@ -19,9 +19,18 @@ class LocalRagService:
         self.embedder = embedder
         self.namespace = namespace
         self.allowed_roots = [Path(root).expanduser().resolve() for root in (allowed_roots or [])]
+        self.session_id = ""
 
     def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
-        return self.store.search(self.namespace, query, self.embedder.embed_query(query), limit=limit)
+        project = str(self.allowed_roots[0]) if self.allowed_roots else ""
+        return self.store.search(
+            self.namespace,
+            query,
+            self.embedder.embed_query(query),
+            limit=limit,
+            project=project,
+            session_id=self.session_id,
+        )
 
     def index_text(
         self,
@@ -53,7 +62,8 @@ class LocalRagService:
         resolved = Path(path).expanduser().resolve()
         if resolved.name.lower() in _BLOCKED_NAMES or resolved.suffix.lower() not in _ALLOWED_SUFFIXES:
             raise ValueError("File type is not allowed for local RAG indexing")
-        if not self.allowed_roots or not any(resolved.is_relative_to(root) for root in self.allowed_roots):
+        project_root = next((root for root in self.allowed_roots if resolved.is_relative_to(root)), None)
+        if project_root is None:
             raise ValueError("Path is not allowed for local RAG indexing")
         if not resolved.is_file() or resolved.stat().st_size > 5_000_000:
             raise ValueError("File is missing or exceeds the 5 MB indexing limit")
@@ -65,6 +75,6 @@ class LocalRagService:
             raw,
             source=f"file:{digest}:{resolved}",
             kind="document",
-            project=str(resolved.parent),
+            project=str(project_root),
             metadata={"path": str(resolved)},
         )

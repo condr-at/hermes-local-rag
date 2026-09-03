@@ -124,12 +124,14 @@ class MemoryStore:
         ttl_seconds: float | None = None,
         project: str = "",
         metadata: dict | None = None,
+        dedupe_key: str | None = None,
     ) -> bool:
         vector = list(embedding)
         if len(vector) != self.dimensions:
             raise ValueError(f"Expected {self.dimensions} dimensions, got {len(vector)}")
         cleaned = text.strip()
-        digest = hashlib.sha256(f"{source}\0{cleaned}".encode()).hexdigest()
+        digest_input = dedupe_key if dedupe_key is not None else f"{source}\0{cleaned}"
+        digest = hashlib.sha256(digest_input.encode()).hexdigest()
         expires_at = time.time() + ttl_seconds if ttl_seconds is not None else None
         try:
             with self._lock, self._conn:
@@ -152,16 +154,43 @@ class MemoryStore:
             inserted += int(self.add(namespace, source=source, **record))
         return inserted
 
-    def search(self, namespace: str, query: str, query_embedding: Iterable[float], *, limit: int = 5) -> list[SearchResult]:
+    def search(
+        self,
+        namespace: str,
+        query: str,
+        query_embedding: Iterable[float],
+        *,
+        limit: int = 5,
+        project: str | None = None,
+        session_id: str | None = None,
+    ) -> list[SearchResult]:
         qvec = list(query_embedding)
         if len(qvec) != self.dimensions:
             raise ValueError(f"Expected {self.dimensions} dimensions, got {len(qvec)}")
         now = time.time()
         with self._lock:
+            visibility = ""
+            lexical_visibility = ""
+            visibility_args: tuple[str, ...] = ()
+            if project is not None and session_id is not None:
+                def visibility_clause(prefix: str) -> str:
+                    metadata = f"{prefix}metadata_json"
+                    project_column = f"{prefix}project"
+                    return (
+                    " AND ("
+                    f"(json_extract({metadata},'$.scope') IS NULL AND ({project_column}='' OR {project_column}=?)) OR "
+                    f"json_extract({metadata},'$.scope')='global' OR "
+                    f"(json_extract({metadata},'$.scope')='project' AND {project_column}=?) OR "
+                    f"(json_extract({metadata},'$.scope')='session' AND json_extract({metadata},'$.session_id')=?)"
+                    ")"
+                    )
+                visibility = visibility_clause("")
+                lexical_visibility = visibility_clause("m.")
+                visibility_args = (project, project, session_id)
             rows = self._conn.execute(
                 "SELECT id,text,source,embedding,kind,confidence,importance,created_at "
-                "FROM memories WHERE namespace=? AND (expires_at IS NULL OR expires_at>?)",
-                (namespace, now),
+                "FROM memories WHERE namespace=? AND (expires_at IS NULL OR expires_at>?)" + visibility,
+                (namespace, now, *visibility_args),
             ).fetchall()
             lexical: dict[int, float] = {}
             terms = re.findall(r"[\w-]{2,}", query, flags=re.UNICODE)
@@ -171,8 +200,8 @@ class MemoryStore:
                     "SELECT m.id,bm25(memories_fts) rank FROM memories_fts "
                     "JOIN memories m ON m.id=memories_fts.rowid "
                     "WHERE memories_fts MATCH ? AND m.namespace=? "
-                    "AND (m.expires_at IS NULL OR m.expires_at>?) LIMIT 100",
-                    (expression, namespace, now),
+                    "AND (m.expires_at IS NULL OR m.expires_at>?)" + lexical_visibility + " LIMIT 100",
+                    (expression, namespace, now, *visibility_args),
                 ):
                     lexical[int(row["id"])] = 1.0
         ranked: list[SearchResult] = []
@@ -238,6 +267,22 @@ class MemoryStore:
         with self._lock, self._conn:
             cursor = self._conn.execute("DELETE FROM memories WHERE namespace=? AND id=?", (namespace, memory_id))
         return cursor.rowcount == 1
+
+    def delete_source_containing(self, namespace: str, source: str, needle: str) -> int:
+        """Delete mirrored rows whose text contains Hermes' resolved old_text selector."""
+        value = needle.strip()
+        if not value:
+            return 0
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id,text FROM memories WHERE namespace=? AND source=?",
+                (namespace, source),
+            ).fetchall()
+            folded = value.casefold()
+            ids = [int(row["id"]) for row in rows if folded in str(row["text"]).casefold()]
+            if ids:
+                self._conn.executemany("DELETE FROM memories WHERE id=?", [(memory_id,) for memory_id in ids])
+            return len(ids)
 
     def count(self, namespace: str) -> int:
         with self._lock:

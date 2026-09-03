@@ -110,8 +110,14 @@ def test_models_are_fixed_allowlist_and_visual_opt_in(client: TestClient, monkey
     assert api.VISUAL_REPO not in {call[2] for call in calls}
 
 
-def test_backfill_and_activation_require_confirmation(client: TestClient) -> None:
+def test_backfill_is_disabled_until_selective_extraction_exists(client: TestClient) -> None:
     assert client.post("/setup/backfill", json={"confirm": False}).status_code == 400
+    response = client.post("/setup/backfill", json={"confirm": True})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Selective backfill is not available yet; raw session transcripts are never indexed"
+
+
+def test_activation_requires_confirmation(client: TestClient) -> None:
     assert client.post("/setup/activate", json={"confirm": False}).status_code == 400
 
 
@@ -205,11 +211,32 @@ def test_completed_job_history_is_bounded(client: TestClient) -> None:
 
 def test_dashboard_ui_uses_protected_setup_contract() -> None:
     script = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
-    for route in ("/setup/status", "/setup/progress", "/setup/auth", "/setup/dependencies", "/setup/models", "/setup/config", "/setup/backfill", "/setup/activate"):
+    for route in ("/setup/status", "/setup/progress", "/setup/auth", "/setup/dependencies", "/setup/models", "/setup/config", "/setup/activate"):
         assert route in script
+    assert '"/setup/backfill"' not in script
+    assert "Raw transcript import is disabled" in script
     assert "Sign in from a terminal" not in script
     assert "hf auth login" not in script
     assert 'terms_accepted: acceptedTerms' in script
     assert 'visual_enabled: mode === "visual"' in script
+    assert 'type: "radio"' in script
+    assert 'name: "local-rag-model-mode"' in script
+    assert 'name: "local-rag-retention"' in script
+    assert "ChoiceButton" not in script
     source = (Path(__file__).parents[1] / "dashboard" / "src" / "index.js").read_text(encoding="utf-8")
     assert source == script
+
+
+def test_dashboard_manifest_loads_setup_assets() -> None:
+    dashboard = Path(__file__).parents[1] / "dashboard"
+    manifest = json.loads((dashboard / "manifest.json").read_text(encoding="utf-8"))
+    script = (dashboard / "dist" / "index.js").read_text(encoding="utf-8")
+
+    assert manifest["name"] == "local_rag"
+    assert manifest["tab"]["path"] == "/local-rag"
+    assert manifest["entry"] == "dist/index.js"
+    assert manifest["css"] == "dist/style.css"
+    assert (dashboard / manifest["entry"]).is_file()
+    assert (dashboard / manifest["css"]).is_file()
+    assert f'register("{manifest["name"]}", Page)' in script
+    assert f'const API = "/api/plugins/{manifest["name"]}"' in script
