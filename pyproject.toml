@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-local-rag"
-version = "1.0.0"
+version = "1.1.0"
 description = "Private local hybrid text and visual memory provider for Hermes Agent"
 readme = "README.md"
 license = "MIT"
@@ -34,7 +34,7 @@ hermes-local-rag = "local_rag.cli:main"
 hermes-local-rag-backfill = "local_rag.backfill:main"
 
 [dependency-groups]
-dev = ["pytest>=9,<10"]
+dev = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "pytest>=9,<10"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["local_rag"]

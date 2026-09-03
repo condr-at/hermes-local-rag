@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 dist/
+!local_rag/dashboard/dist/
+!local_rag/dashboard/dist/**
 build/
 *.egg-info/
 .DS_Store

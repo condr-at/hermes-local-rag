@@ -206,3 +206,27 @@ def test_embedding_dimension_mismatch_fails_loudly(tmp_path: Path) -> None:
         assert "dimension" in str(exc).lower()
     else:
         raise AssertionError("dimension mismatch must stop startup")
+
+
+def test_provider_config_schema_and_save(tmp_path: Path) -> None:
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    schema = {field["key"]: field for field in provider.get_config_schema()}
+    assert schema["embedding_dimensions"]["default"] == "512"
+    assert schema["episodic_ttl_days"]["default"] == ""
+    assert schema["summary_ttl_days"]["default"] == ""
+    assert schema["visual_enabled"]["default"] is False
+
+    provider.save_config(
+        {
+            "embedding_dimensions": "768",
+            "episodic_ttl_days": "30",
+            "summary_ttl_days": "",
+            "visual_enabled": False,
+        },
+        str(tmp_path),
+    )
+    config = LocalRagConfig.load(tmp_path)
+    assert config.embedding_dimensions == 768
+    assert config.episodic_ttl_days == 30
+    assert config.summary_ttl_days is None
+    assert config.visual_enabled is False

@@ -42,6 +42,37 @@ class LocalRagProvider(MemoryProvider):
         except (ImportError, OSError):
             return False
 
+    def get_config_schema(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "key": "embedding_dimensions",
+                "description": "Text embedding dimensions (changing an existing index requires reindexing)",
+                "default": "512",
+                "choices": ["128", "256", "512", "768"],
+            },
+            {
+                "key": "episodic_ttl_days",
+                "description": "Episodic retention in days; leave blank to keep forever",
+                "default": "",
+                "required": False,
+            },
+            {
+                "key": "summary_ttl_days",
+                "description": "Session-summary retention in days; leave blank to keep forever",
+                "default": "",
+                "required": False,
+            },
+            {
+                "key": "visual_enabled",
+                "description": "Enable local CLIP image indexing and search",
+                "default": False,
+                "choices": [True, False],
+            },
+        ]
+
+    def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
+        LocalRagConfig.from_values(values).save(hermes_home)
+
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         hermes_home = Path(kwargs["hermes_home"])
         self._config = LocalRagConfig.load(hermes_home)
@@ -208,6 +239,8 @@ class LocalRagProvider(MemoryProvider):
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
     def _visual(self) -> Any:
+        if not self._config.visual_enabled:
+            raise ValueError("Visual memory is disabled in Local RAG settings")
         if self._visual_embedder is None:
             from .visual import get_shared_visual_embedder
             self._visual_embedder = get_shared_visual_embedder()

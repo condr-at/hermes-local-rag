@@ -12,11 +12,36 @@ Private, fully local hybrid text and visual memory for [Hermes Agent](https://gi
 - Redacted Hermes session backfill without reading internal `state.db` tables
 - Project-root-confined text-file indexing with secret and prompt-injection rejection
 - Optional CLIP ViT-B/32 ONNX visual index in a separate 512d vector space
-- No model server, vector database server, GUI, or Hermes core patch
+- Button-driven setup inside Hermes Dashboard; no model server, vector database server, or Hermes core patch
 
-## Install
+## Install without Terminal
 
-Prerequisites: an existing Hermes Agent installation, `uv`, Hugging Face authentication, and accepted Gemma Terms for the gated EmbeddingGemma repositories.
+Prerequisite: an existing Hermes Agent installation.
+
+1. Open **Hermes Dashboard → Plugins → Install**.
+2. Install `condr-at/hermes-local-rag/local_rag`.
+3. Open the new **Local RAG** tab.
+4. Click **Install dependencies**.
+5. Open and accept the required Gemma Terms, create a read-only Hugging Face token, paste it into the password field, and click **Sign in**.
+6. Choose **Text only** or **Text + visual**, then click **Download selected models**.
+7. Save the memory settings, optionally approve redacted session backfill, and click **Activate Local RAG**.
+8. Click **Run health check**.
+
+The dashboard never displays or logs the Hugging Face token. Model downloads and setup subprocesses use fixed argument lists and a controlled environment rather than a user shell. Gemma Terms acceptance is explicit and cannot be bypassed by the installer.
+
+The setup wizard:
+
+1. installs pinned runtime dependencies into the Hermes venv;
+2. downloads selected model artifacts to `$HERMES_HOME/models`;
+3. writes configuration atomically;
+4. activates `memory.provider=local_rag`;
+5. checks runtime imports, models, the database, and provider availability.
+
+It never deletes `$HERMES_HOME/local-rag`, where indexes and configuration live. Backfill is off by default and requires explicit confirmation.
+
+### Terminal fallback
+
+The technical installer remains available for development and recovery:
 
 ```bash
 git clone https://github.com/condr-at/hermes-local-rag.git
@@ -24,22 +49,13 @@ cd hermes-local-rag
 python3 install.py
 ```
 
-The installer:
-
-1. installs pinned runtime dependencies into the Hermes venv;
-2. copies the plugin to `$HERMES_HOME/plugins/local_rag`;
-3. downloads model artifacts to `$HERMES_HOME/models`;
-4. activates it with `hermes config set memory.provider local_rag`.
-
-It never deletes `$HERMES_HOME/local-rag`, where indexes and configuration live.
-
 Verify after installation or a Hermes update:
 
 ```bash
 python3 install.py --check
 ```
 
-Then restart the gateway from a separate shell, or start a new Desktop session.
+Then restart the gateway, or start a new Desktop session.
 
 ## Configuration
 

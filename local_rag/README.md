@@ -18,6 +18,12 @@ The 512-token artifact is intentional. Normal chunks are at most 384 words with 
 
 Model weights are not distributed by this plugin. EmbeddingGemma remains subject to Gemma Terms; CLIP artifacts retain their upstream license.
 
+## Dashboard setup
+
+After installing the plugin from **Hermes Dashboard → Plugins**, open the **Local RAG** tab. The wizard installs dependencies, accepts a read-only Hugging Face token through a local password field, downloads the selected models, saves retention and embedding settings, optionally runs approved redacted backfill, activates the provider, and performs a health check. No Terminal is required for the normal path.
+
+The token is passed directly to `huggingface_hub.login`, is never placed in a subprocess argument, response, config file, or setup log, and remains governed by Hugging Face's credential storage. Gemma Terms must still be accepted by the user in the browser.
+
 ## Ingestion
 
 - User turns and session summaries are retained indefinitely by default.
