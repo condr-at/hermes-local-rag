@@ -1,0 +1,52 @@
+# Hermes Local RAG
+
+User-local `MemoryProvider` for private hybrid recall. It lives outside the Hermes checkout and survives normal updates.
+
+## Storage and isolation
+
+- Text: `~/.hermes/local-rag/memory.sqlite` (SQLite WAL + FTS5 + local vectors)
+- Images: `~/.hermes/local-rag/visual.sqlite`
+- Namespace: `<profile>:<platform-user>`, with Desktop/CLI mapped to `<profile>:local`
+- Model weights are shared read-only; records are always filtered by namespace before ranking.
+
+## Models
+
+- Text: EmbeddingGemma 300M LiteRT `seq512`, 512-dimensional Matryoshka output by default; configurable to 128/256/512/768.
+- Visual: quantized CLIP ViT-B/32 ONNX, 512 dimensions. Loaded lazily only for visual tools.
+
+The 512-token artifact is intentional. Normal chunks are at most 384 words with 64-word overlap; context injection has a separate 3,200-character hard budget. A 2048-token model would increase interactive work without improving these bounded chunks.
+
+Model weights are not distributed by this plugin. EmbeddingGemma remains subject to Gemma Terms; CLIP artifacts retain their upstream license.
+
+## Ingestion
+
+- User turns and session summaries are retained indefinitely by default.
+- `~/.hermes/local-rag/config.json` can set `episodic_ttl_days` and `summary_ttl_days` to positive day counts; `null` means no expiry.
+- Explicit preferences, decisions, and environment statements enter a review queue.
+- Approved candidates and built-in Hermes memory writes become durable records.
+- Assistant claims and raw tool output are never promoted as user facts.
+- Secret-like content, `.env`, private keys, unsupported/binary files, oversized files, and paths outside the current project root are rejected before embedding.
+
+## Retrieval
+
+Hybrid ranking combines semantic similarity, FTS5 exact matches, importance, freshness, and a durable-memory boost. Low-scoring matches are omitted. Context injection includes provenance, limits repeated sources, and labels all retrieved text as untrusted data rather than instructions.
+
+## Agent tools
+
+`local_rag_search`, `local_rag_status`, `local_rag_forget`, `local_rag_review`, `local_rag_approve`, `local_rag_reject`, `local_rag_index_file`, `local_rag_import_sessions`, `local_rag_prune`, `local_rag_index_image`, `local_rag_search_images`, `local_rag_forget_image`.
+
+## Maintenance CLI
+
+From the Hermes checkout:
+
+```sh
+PYTHONPATH="$HOME/.hermes/plugins" venv/bin/python -m local_rag.cli status
+PYTHONPATH="$HOME/.hermes/plugins" venv/bin/python -m local_rag.cli --namespace default:local search "query"
+PYTHONPATH="$HOME/.hermes/plugins" venv/bin/python -m local_rag.backfill
+```
+
+Backfill creates an official redacted Hermes JSONL export in a temporary directory, routes sessions by profile/user, indexes user messages and extractive summaries, and deletes the temporary export automatically.
+
+## Recovery
+
+Hermes backup discovers `local-rag/` through `backup_paths()`. Schema upgrades create `memory.pre-v2.sqlite` before the first v2 migration. A changed embedding dimension stops startup with an explicit reindex error instead of corrupting existing vectors.
