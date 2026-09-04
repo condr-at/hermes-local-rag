@@ -41,7 +41,7 @@ class MemoryStore:
         try:
             table = source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'").fetchone()
             columns = {row[1] for row in source.execute("PRAGMA table_info(memories)")} if table else set()
-            backup_path = self.path.with_name("memory.pre-v2.sqlite")
+            backup_path = self.path.with_name("memory.pre-v2.db")
             if table and "kind" not in columns and not backup_path.exists():
                 target = sqlite3.connect(backup_path)
                 try:

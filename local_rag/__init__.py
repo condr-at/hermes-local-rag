@@ -12,6 +12,7 @@ from typing import Any
 from agent.memory_provider import MemoryProvider
 
 from .config import LocalRagConfig
+from .database import canonical_database_path
 from .policy import IngestDecision, classify_text
 from .service import LocalRagService
 
@@ -97,8 +98,12 @@ class LocalRagProvider(MemoryProvider):
         if self._embedder is None:
             from .embedder import get_shared_embedder
             self._embedder = get_shared_embedder(self._config.embedding_dimensions)
-        self._store = MemoryStore(hermes_home / "local-rag" / "memory.sqlite", dimensions=self._embedder.dimensions)
-        self._visual_store = VisualStore(hermes_home / "local-rag" / "visual.sqlite")
+        database_directory = hermes_home / "local-rag"
+        self._store = MemoryStore(
+            canonical_database_path(database_directory, "memory"),
+            dimensions=self._embedder.dimensions,
+        )
+        self._visual_store = VisualStore(canonical_database_path(database_directory, "visual"))
         cwd = Path(kwargs.get("cwd") or Path.cwd()).resolve()
         self._project = str(cwd)
         self._service = LocalRagService(store=self._store, embedder=self._embedder, namespace=self._namespace, allowed_roots=[cwd])
@@ -402,9 +407,6 @@ class LocalRagProvider(MemoryProvider):
         if not any(path.is_relative_to(root) for root in self._service.allowed_roots):
             raise ValueError("Image path is outside the current project root")
         return path
-
-    def backup_paths(self) -> list[str]:
-        return ["local-rag"]
 
     def shutdown(self) -> None:
         if self._store:

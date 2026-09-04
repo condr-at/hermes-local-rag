@@ -180,6 +180,7 @@ def test_selective_backfill_preview_review_and_apply_are_separate(
     assert wait(client, preview.json()["job_id"])["state"] == "complete"
     assert not list((home / "local-rag").glob(".backfill-export-*.jsonl"))
     assert not (home / "local-rag" / "memory.sqlite").exists()
+    assert not (home / "local-rag" / "memory.db").exists()
 
     plan = client.get("/setup/backfill/plan")
     assert plan.status_code == 200

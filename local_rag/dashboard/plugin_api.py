@@ -29,6 +29,7 @@ if _PLUGIN_PARENT not in sys.path:
     sys.path.insert(0, _PLUGIN_PARENT)
 
 from local_rag.backfill import plan_key, validate_plan_payload
+from local_rag.database import canonical_database_path
 from local_rag.policy import IngestDecision, classify_text
 
 router = APIRouter()
@@ -153,7 +154,7 @@ def _status() -> dict[str, Any]:
             # A path can exist but still be an invalid or stale executable.
             deps = False
     auth = _auth_status()
-    db_path = home / "local-rag" / "memory.sqlite"
+    db_path = canonical_database_path(home / "local-rag", "memory")
     database: dict[str, Any] = {"exists": db_path.is_file(), "healthy": None, "embedding_dimensions": None, "memory_count": None}
     if db_path.is_file():
         try:
@@ -314,7 +315,7 @@ def setup_config(request: SetupConfigRequest):
     if any(value is not None and value <= 0 for value in (request.episodic_ttl_days, request.summary_ttl_days)):
         raise HTTPException(422, "TTLs must be null or positive")
     path = _home() / "local-rag" / "config.json"
-    db = _home() / "local-rag" / "memory.sqlite"
+    db = canonical_database_path(_home() / "local-rag", "memory")
     if db.is_file():
         try:
             with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True) as conn:

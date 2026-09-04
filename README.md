@@ -23,8 +23,10 @@ Published package: [hermes-local-rag on PyPI](https://pypi.org/project/hermes-lo
 
 For packaged-provider discovery, install it into the same Python environment that runs Hermes:
 
+> Upgrading from 1.3.2 or older: stop every Hermes Desktop and gateway process first. Version 1.3.3 performs a one-time, integrity-checked migration from `memory.sqlite` / `visual.sqlite` to backup-safe `.db` files and removes the legacy files after success.
+
 ```bash
-python -m pip install hermes-local-rag==1.3.2
+python -m pip install hermes-local-rag==1.3.3
 hermes config set memory.provider local_rag
 ```
 

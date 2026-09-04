@@ -1,5 +1,5 @@
 name: local_rag
-version: 1.3.2
+version: 1.3.3
 description: "Private local hybrid text and visual memory with profile isolation."
 hooks:
   - on_memory_write

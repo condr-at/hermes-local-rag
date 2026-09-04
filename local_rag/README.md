@@ -4,8 +4,8 @@ User-local `MemoryProvider` for private hybrid recall. It lives outside the Herm
 
 ## Storage and isolation
 
-- Text: `~/.hermes/local-rag/memory.sqlite` (SQLite WAL + FTS5 + local vectors)
-- Images: `~/.hermes/local-rag/visual.sqlite`
+- Text: `~/.hermes/local-rag/memory.db` (SQLite WAL + FTS5 + local vectors)
+- Images: `~/.hermes/local-rag/visual.db`
 - Namespace: `<profile>:<platform-user>`, with Desktop/CLI mapped to `<profile>:local`
 - Model weights are shared read-only; records are always filtered by namespace before ranking.
 
@@ -54,4 +54,6 @@ Raw transcript backfill is disabled. Historical sessions must first undergo sele
 
 ## Recovery
 
-Hermes backup discovers `local-rag/` through `backup_paths()`. Schema upgrades create `memory.pre-v2.sqlite` before the first v2 migration. A changed embedding dimension stops startup with an explicit reindex error instead of corrupting existing vectors.
+Hermes includes `local-rag/` because it lives inside `HERMES_HOME`; no external `backup_paths()` entry is needed. Active stores use the `.db` suffix, so Hermes snapshots them with SQLite's backup API instead of copying a live WAL database as an ordinary file. Schema upgrades create `memory.pre-v2.db` before the first v2 migration. A changed embedding dimension stops startup with an explicit reindex error instead of corrupting existing vectors.
+
+When upgrading from a release that used `memory.sqlite` or `visual.sqlite`, stop every Hermes Desktop and gateway process before starting the new version. Startup then migrates committed main-file and WAL data into `.db`, verifies integrity, durably installs the new database, and removes the legacy database and sidecars. Old plugin processes must not remain alive during this one-time filename migration because they do not participate in the new migration lock.

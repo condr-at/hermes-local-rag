@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -16,6 +17,7 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 from local_rag.chunking import chunk_text
 from local_rag.config import LocalRagConfig
+from local_rag.database import canonical_database_path
 from local_rag.extraction import extract_candidates, summarize_session
 from local_rag import LocalRagProvider
 from local_rag.backfill import _seal_item, apply_plan, apply_plan_to_store, build_plan, extract_session, import_full_export, plan_key
@@ -23,6 +25,7 @@ from local_rag.cli import MEMORY_ITEMS_SCHEMA
 from local_rag.service import LocalRagService
 from local_rag.sessions import import_session_jsonl
 from local_rag.store import MemoryStore
+from local_rag.visual_store import VisualStore
 
 
 class FakeEmbedder:
@@ -150,6 +153,112 @@ def test_provider_lifecycle_does_not_create_implicit_memory(tmp_path: Path) -> N
     status = json.loads(provider.handle_tool_call("local_rag_status", {}))
     assert status["entries"] == 0
     assert status["pending_review"] == 0
+
+
+def test_provider_declares_no_external_backup_paths() -> None:
+    assert LocalRagProvider(embedder=FakeEmbedder()).backup_paths() == []
+
+
+def test_provider_migrates_live_wal_database_to_backup_safe_db_name(tmp_path: Path) -> None:
+    directory = tmp_path / "local-rag"
+    legacy_path = directory / "memory.sqlite"
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import os, sys; "
+            "from local_rag.store import MemoryStore; "
+            "store=MemoryStore(Path(sys.argv[1]), dimensions=3); "
+            "store.add('default:owner', 'The project stores curated memories only.', "
+            "[1.0, 0.0, 0.0], source='migration:test', kind='memory_item', "
+            "metadata={'scope': 'global'}); os._exit(0)",
+            str(legacy_path),
+        ],
+        check=True,
+    )
+    assert (directory / "memory.sqlite-wal").exists()
+
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+        user_id="owner",
+        agent_context="primary",
+        cwd=str(tmp_path),
+    )
+
+    assert provider._store is not None
+    assert provider._store.path == directory / "memory.db"
+    assert provider._store.count("default:owner") == 1
+    with sqlite3.connect(directory / "memory.db") as snapshot:
+        assert snapshot.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert not (directory / "memory.sqlite").exists()
+    assert not (directory / "memory.sqlite-wal").exists()
+    assert not (directory / "memory.sqlite-shm").exists()
+    assert not list(directory.glob(".memory.*.db-*"))
+    assert (directory / "visual.db").exists()
+    assert not (directory / "visual.sqlite").exists()
+
+
+def test_visual_database_migration_preserves_records_and_is_idempotent(tmp_path: Path) -> None:
+    directory = tmp_path / "local-rag"
+    legacy = VisualStore(directory / "visual.sqlite", dimensions=3)
+    legacy.upsert("default:owner", "/tmp/image.png", "abc123", [1.0, 0.0, 0.0])
+    legacy.close()
+
+    target = canonical_database_path(directory, "visual")
+    assert canonical_database_path(directory, "visual") == target
+    migrated = VisualStore(target, dimensions=3)
+    assert migrated.count("default:owner") == 1
+    migrated.close()
+    assert target == directory / "visual.db"
+    assert not (directory / "visual.sqlite").exists()
+
+
+def test_existing_corrupt_target_is_rebuilt_from_legacy_database(tmp_path: Path) -> None:
+    directory = tmp_path / "local-rag"
+    legacy = MemoryStore(directory / "memory.sqlite", dimensions=3)
+    legacy.close()
+    target = directory / "memory.db"
+    target.write_bytes(b"not a sqlite database")
+
+    assert canonical_database_path(directory, "memory") == target
+
+    with sqlite3.connect(target) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert not (directory / "memory.sqlite").exists()
+
+
+def test_stale_target_wal_cannot_override_migrated_legacy_data(tmp_path: Path) -> None:
+    directory = tmp_path / "local-rag"
+    target = directory / "memory.db"
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import os, sys; "
+            "from local_rag.store import MemoryStore; "
+            "store=MemoryStore(Path(sys.argv[1]), dimensions=3); "
+            "store.add('default:owner', 'stale target record', [1.0, 0.0, 0.0], "
+            "source='target:test'); os._exit(0)",
+            str(target),
+        ],
+        check=True,
+    )
+    legacy = MemoryStore(directory / "memory.sqlite", dimensions=3)
+    legacy.add("default:owner", "authoritative legacy record", [1.0, 0.0, 0.0], source="legacy:test")
+    legacy.close()
+    assert Path(f"{target}-wal").exists()
+
+    canonical_database_path(directory, "memory")
+
+    migrated = MemoryStore(target, dimensions=3)
+    rows = migrated.search("default:owner", "record", [1.0, 0.0, 0.0], limit=10)
+    migrated.close()
+    assert [row.text for row in rows] == ["authoritative legacy record"]
+    assert not Path(f"{target}-wal").exists()
+    assert not Path(f"{target}-shm").exists()
 
 
 def test_provider_refreshes_project_scope_from_canonical_session_state(tmp_path: Path) -> None:
@@ -746,7 +855,7 @@ def test_reviewed_plan_applies_to_store_idempotently(tmp_path: Path) -> None:
 
     assert first == {"accepted": 1, "stored": 1, "duplicates": 0}
     assert second == {"accepted": 1, "stored": 0, "duplicates": 1}
-    store = MemoryStore(tmp_path / "local-rag" / "memory.sqlite", dimensions=3)
+    store = MemoryStore(tmp_path / "local-rag" / "memory.db", dimensions=3)
     assert store.count("default:local") == 1
     with sqlite3.connect(store.path) as connection:
         metadata = json.loads(connection.execute("SELECT metadata_json FROM memories").fetchone()[0])
@@ -789,7 +898,7 @@ def test_legacy_database_is_backed_up_before_migration(tmp_path: Path) -> None:
 
     MemoryStore(path, dimensions=3).close()
 
-    assert (tmp_path / "memory.pre-v2.sqlite").exists()
+    assert (tmp_path / "memory.pre-v2.db").exists()
 
 
 def test_embedding_dimension_mismatch_fails_loudly(tmp_path: Path) -> None:

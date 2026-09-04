@@ -112,7 +112,7 @@ def test_local_rag_remember_stores_atomic_item_with_runtime_provenance(tmp_path:
     assert "The project uses Python for its indexing pipeline." in recall
     assert "agent:session-a" in recall
 
-    connection = sqlite3.connect(tmp_path / "local-rag" / "memory.sqlite")
+    connection = sqlite3.connect(tmp_path / "local-rag" / "memory.db")
     row = connection.execute("SELECT kind, project, metadata_json FROM memories").fetchone()
     connection.close()
     metadata = json.loads(row[2])
@@ -486,7 +486,7 @@ def test_package_declares_hermes_memory_provider_entry_point() -> None:
     metadata = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     package_version = metadata["project"]["version"]
 
-    assert package_version == "1.3.2"
+    assert package_version == "1.3.3"
     assert metadata["project"]["entry-points"]["hermes_agent.memory_providers"] == {
         "local_rag": "local_rag:register",
     }

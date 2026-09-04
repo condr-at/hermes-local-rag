@@ -10,6 +10,7 @@ from pathlib import Path
 from .embedder import get_shared_embedder
 from .backfill import apply_plan_to_store, build_plan, plan_key
 from .config import LocalRagConfig
+from .database import canonical_database_path
 from .service import LocalRagService
 from .sessions import import_session_jsonl
 from .store import MemoryStore
@@ -196,7 +197,7 @@ def main() -> int:
     if args.command == "backfill":
         return local_rag_command(args)
 
-    db = Path(args.home).expanduser() / "local-rag" / "memory.sqlite"
+    db = canonical_database_path(Path(args.home).expanduser() / "local-rag", "memory")
     config = LocalRagConfig.load(args.home)
     store = MemoryStore(db, dimensions=config.embedding_dimensions)
     try:

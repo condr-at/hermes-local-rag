@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .database import canonical_database_path
 from .policy import IngestDecision, classify_text
 
 
@@ -358,7 +359,10 @@ def apply_plan_to_store(plan_path: Path, *, hermes_home: Path, embedder: Any | N
     home = Path(hermes_home).expanduser().resolve()
     config = LocalRagConfig.load(home)
     active_embedder = embedder or get_shared_embedder(config.embedding_dimensions)
-    store = MemoryStore(home / "local-rag" / "memory.sqlite", dimensions=active_embedder.dimensions)
+    store = MemoryStore(
+        canonical_database_path(home / "local-rag", "memory"),
+        dimensions=active_embedder.dimensions,
+    )
 
     def index(item: dict[str, Any]) -> bool:
         decision = classify_text(item["text"])
