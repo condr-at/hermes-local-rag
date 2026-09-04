@@ -1,5 +1,7 @@
 # Hermes Local RAG
 
+[![Hermes Local RAG — private local memory that keeps the useful card and bins the noise](https://raw.githubusercontent.com/condr-at/hermes-local-rag/main/assets/branding/local-rag-preview-1600x900.webp)](https://github.com/condr-at/hermes-local-rag)
+
 Private, fully local hybrid text and visual memory for [Hermes Agent](https://github.com/NousResearch/hermes-agent), implemented through the official `MemoryProvider` extension point.
 
 ## Features

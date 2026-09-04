@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Local RAG memory drawer</title>
+  <desc id="desc">A dark archive drawer holding an ivory memory card, with an amber node mark and a rejected crumpled note.</desc>
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#343330"/>
+      <stop offset="1" stop-color="#151615"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff4da"/>
+      <stop offset="1" stop-color="#e9d7b5"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="89" y="78" width="334" height="340" rx="44" fill="url(#body)"/>
+    <rect x="119" y="116" width="274" height="224" rx="26" fill="#0e0f0e"/>
+    <rect x="139" y="137" width="234" height="170" rx="24" fill="url(#paper)"/>
+    <rect x="112" y="249" width="288" height="180" rx="27" fill="url(#body)" stroke="#4a4843" stroke-width="5"/>
+    <path d="M112 268h95c10 0 12 28 28 28h42c16 0 18-28 28-28h95v-19H112z" fill="#232321"/>
+    <rect x="188" y="334" width="136" height="44" rx="10" fill="#101110" stroke="#535049" stroke-width="5"/>
+    <circle cx="256" cy="403" r="17" fill="#252522" stroke="#55524c" stroke-width="4"/>
+  </g>
+  <g fill="none" stroke="#d98b14" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M286 191l-34 49m34-49l38 49m-72 0h72"/>
+    <circle cx="286" cy="181" r="14" fill="#fff4da"/>
+    <circle cx="245" cy="249" r="14" fill="#fff4da"/>
+    <circle cx="331" cy="249" r="14" fill="#fff4da"/>
+  </g>
+  <g transform="translate(405 295) rotate(8)">
+    <path d="M0 20l19-18 17 12 17-8 12 22-12 17 7 19-23 10-15-12-22 5-8-23z" fill="#e8d8ba" stroke="#c7b28d" stroke-width="4"/>
+    <path d="M5 24l17 15 14-21 15 29" fill="none" stroke="#baa27b" stroke-width="3"/>
+  </g>
+</svg>

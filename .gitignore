@@ -9,6 +9,7 @@ build/
 *.egg-info/
 .DS_Store
 .coverage
+assets/*.zip
 
 # Never commit local memory, models, exports, or credentials
 local-rag/
