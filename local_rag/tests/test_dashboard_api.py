@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -13,6 +15,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from local_rag.dashboard import plugin_api as api
+
+
+def test_dashboard_backend_loads_as_standalone_plugin_module() -> None:
+    path = Path(api.__file__)
+    name = "hermes_dashboard_plugin_local_rag_test"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+        assert module.router.routes
+    finally:
+        sys.modules.pop(name, None)
 
 
 @pytest.fixture()

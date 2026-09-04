@@ -172,7 +172,10 @@
       });
     }
 
-    if (!status) return h("div", { className: "local-rag-page text-sm text-muted-foreground" }, "Checking Local RAG setup…");
+    if (!status) return h("div", { className: "local-rag-page" },
+      h("p", { className: "text-sm text-muted-foreground" }, message ? message.text : "Checking Local RAG setup…"),
+      message && h(Button, { variant: "outline", onClick: refresh }, "Retry")
+    );
     const downloading = busy === "Download models";
     const configured = status.config && Number(status.config.embedding_dimensions) === Number(dimensions) && Boolean(status.config.visual_enabled) === (mode === "visual");
 

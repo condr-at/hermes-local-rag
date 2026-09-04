@@ -20,8 +20,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, SecretStr
 
-from ..backfill import plan_key, validate_plan_payload
-from ..policy import IngestDecision, classify_text
+from local_rag.backfill import plan_key, validate_plan_payload
+from local_rag.policy import IngestDecision, classify_text
 
 router = APIRouter()
 _LOCK = threading.Lock()
