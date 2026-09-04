@@ -279,6 +279,27 @@ def test_selective_extractor_accepts_bounded_descriptive_tags() -> None:
     assert extract_session(session, model=model)[0]["tags"] == tags
 
 
+def test_selective_extractor_skips_operational_progress_updates() -> None:
+    session = {
+        "id": "session-progress", "profile_name": "default", "source": "desktop", "cwd": "/work/project",
+        "messages": [{"id": 41, "role": "user", "content": "Run the release checks."}],
+    }
+
+    def model(_messages: list[dict[str, str]]) -> str:
+        return json.dumps([
+            {"text": "The release verification is in progress and still needs a full test run.",
+             "scope": "project", "subject": "release verification", "durability": "ongoing",
+             "importance": 0.9, "confidence": 1.0, "tags": ["release"]},
+            {"text": "The project uses review-before-apply for historical memory backfill.",
+             "scope": "project", "subject": "backfill review", "durability": "stable",
+             "importance": 0.9, "confidence": 1.0, "tags": ["backfill"]},
+        ])
+
+    assert [item["text"] for item in extract_session(session, model=model)] == [
+        "The project uses review-before-apply for historical memory backfill."
+    ]
+
+
 def test_selective_extractor_rejects_secret_like_model_output() -> None:
     session = {
         "id": "session-secret-output", "profile_name": "default", "source": "desktop", "cwd": "/work/project",
