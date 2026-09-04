@@ -17,7 +17,20 @@ Private, fully local hybrid text and visual memory for [Hermes Agent](https://gi
 - Optional CLIP ViT-B/32 ONNX visual index in a separate 512d vector space
 - Button-driven setup inside Hermes Dashboard; no model server, vector database server, or Hermes core patch
 
-## Install without Terminal
+## Install
+
+Published package: [hermes-local-rag on PyPI](https://pypi.org/project/hermes-local-rag/)
+
+For packaged-provider discovery, install it into the same Python environment that runs Hermes:
+
+```bash
+python -m pip install hermes-local-rag==1.3.1
+hermes config set memory.provider local_rag
+```
+
+The package exposes `local_rag -> local_rag:register` through the official `hermes_agent.memory_providers` entry-point group. Model download and initial configuration are still required; the Dashboard plugin flow below is the recommended guided setup.
+
+### Install without Terminal
 
 Prerequisite: an existing Hermes Agent installation.
 
