@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import json
 import sqlite3
+import tomllib
 from pathlib import Path
 import pytest
 
@@ -478,3 +479,13 @@ def test_standalone_backfill_entrypoints_route_to_selective_handler(monkeypatch:
     monkeypatch.setattr(sys, "argv", ["hermes-local-rag", "backfill", "apply", "--plan", str(tmp_path / "plan.json"), "--home", str(tmp_path)])
     assert cli.main() == 0
     assert calls[-1].backfill_command == "apply"
+
+
+def test_package_declares_hermes_memory_provider_entry_point() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    metadata = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert metadata["project"]["version"] == "1.3.1"
+    assert metadata["project"]["entry-points"]["hermes_agent.memory_providers"] == {
+        "local_rag": "local_rag:register",
+    }
