@@ -24,7 +24,7 @@ Published package: [hermes-local-rag on PyPI](https://pypi.org/project/hermes-lo
 For packaged-provider discovery, install it into the same Python environment that runs Hermes:
 
 ```bash
-python -m pip install hermes-local-rag==1.3.1
+python -m pip install hermes-local-rag==1.3.2
 hermes config set memory.provider local_rag
 ```
 

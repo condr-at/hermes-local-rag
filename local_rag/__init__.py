@@ -1,8 +1,11 @@
 """Local hybrid retrieval memory provider for Hermes Agent."""
 from __future__ import annotations
 
+import contextvars
 import json
 import math
+import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +29,13 @@ class LocalRagProvider(MemoryProvider):
         self._namespace = ""
         self._session_id = ""
         self._project = ""
+        self._hermes_home: Path | None = None
+        self._uses_canonical_state = False
+        self._scope_lock = threading.RLock()
+        self._active_session: contextvars.ContextVar[str] = contextvars.ContextVar(
+            f"local_rag_active_session_{id(self)}",
+            default="",
+        )
         self._write_enabled = True
         self._config = LocalRagConfig()
 
@@ -76,11 +86,13 @@ class LocalRagProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         hermes_home = Path(kwargs["hermes_home"])
+        self._hermes_home = hermes_home
         self._config = LocalRagConfig.load(hermes_home)
         identity = str(kwargs.get("agent_identity") or "default")
         user_id = str(kwargs.get("user_id") or "local")
         self._namespace = f"{identity}:{user_id}"
         self._session_id = session_id
+        self._active_session.set(session_id)
         self._write_enabled = kwargs.get("agent_context", "primary") == "primary"
         if self._embedder is None:
             from .embedder import get_shared_embedder
@@ -91,6 +103,7 @@ class LocalRagProvider(MemoryProvider):
         self._project = str(cwd)
         self._service = LocalRagService(store=self._store, embedder=self._embedder, namespace=self._namespace, allowed_roots=[cwd])
         self._service.session_id = session_id
+        self._refresh_runtime_scope(session_id)
         self._store.prune(self._namespace)
         if self._config.episodic_ttl_days is None and self._config.summary_ttl_days is None:
             self._store.clear_expirations(self._namespace)
@@ -107,10 +120,58 @@ class LocalRagProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if not self._service or not query.strip():
-            return ""
-        self._service.session_id = session_id or self._session_id
-        return self._format_results(self._service.search(query, limit=8))
+        with self._scope_lock:
+            if not self._service or not query.strip():
+                return ""
+            active_session_id = session_id or self._session_id
+            self._session_id = active_session_id
+            self._active_session.set(active_session_id)
+            self._refresh_runtime_scope(active_session_id)
+            self._service.session_id = active_session_id
+            return self._format_results(self._service.search(query, limit=8))
+
+    def _refresh_runtime_scope(self, session_id: str) -> None:
+        if not self._hermes_home or not self._service or not session_id:
+            return
+        state_path = self._hermes_home / "state.db"
+        if not state_path.is_file():
+            if self._uses_canonical_state:
+                self._revoke_project_scope()
+            return
+        self._uses_canonical_state = True
+        self._revoke_project_scope()
+        try:
+            connection = sqlite3.connect(
+                f"file:{state_path}?mode=ro",
+                uri=True,
+                timeout=0.2,
+            )
+            try:
+                row = connection.execute(
+                    "SELECT git_repo_root,cwd FROM sessions WHERE id=?",
+                    (session_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            return
+        if row is None:
+            return
+        candidate = row[0] or row[1]
+        if candidate:
+            path = Path(str(candidate)).expanduser()
+            if not path.is_absolute():
+                return
+            resolved = path.resolve(strict=False)
+            self._project = str(resolved)
+            self._service.allowed_roots = [resolved]
+        else:
+            self._revoke_project_scope()
+
+    def _revoke_project_scope(self) -> None:
+        self._project = ""
+        if self._service:
+            self._service.allowed_roots = []
 
     @staticmethod
     def _format_results(results: list[SearchResult], *, max_chars: int = 3200) -> str:
@@ -143,9 +204,14 @@ class LocalRagProvider(MemoryProvider):
         return None
 
     def on_session_switch(self, new_session_id: str, **kwargs: Any) -> None:
-        self._session_id = new_session_id
-        if self._service:
-            self._service.session_id = new_session_id
+        with self._scope_lock:
+            self._session_id = new_session_id
+            self._active_session.set(new_session_id)
+            if self._uses_canonical_state:
+                self._revoke_project_scope()
+            if self._service:
+                self._service.session_id = new_session_id
+            self._refresh_runtime_scope(new_session_id)
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None) -> None:
         if not self._write_enabled or not self._store:
@@ -202,6 +268,26 @@ class LocalRagProvider(MemoryProvider):
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
+        with self._scope_lock:
+            active_session_id = self._active_session.get() or self._session_id
+            self._refresh_runtime_scope(active_session_id)
+            if self._service:
+                self._service.session_id = active_session_id
+            return self._handle_tool_call_locked(
+                tool_name,
+                args,
+                active_session_id=active_session_id,
+                **kwargs,
+            )
+
+    def _handle_tool_call_locked(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        active_session_id: str,
+        **kwargs: Any,
+    ) -> str:
         if not self._store or not self._service or not self._embedder:
             return json.dumps({"error": "Local RAG is not initialized"})
         try:
@@ -236,14 +322,16 @@ class LocalRagProvider(MemoryProvider):
                 tags = [tag.strip() for tag in raw_tags if tag.strip()]
                 if len(tags) > 8 or any(len(tag) > 64 for tag in tags):
                     raise ValueError("Memory tags must contain at most 8 values of at most 64 characters")
+                if scope == "project" and not self._project:
+                    raise ValueError("Project-scoped memory requires an active project")
                 project = self._project if scope == "project" else ""
-                scope_identity = self._session_id if scope == "session" else project
+                scope_identity = active_session_id if scope == "session" else project
                 normalized_text = " ".join(text.casefold().split())
                 stored = self._store.add(
                     self._namespace,
                     text,
                     self._embedder.embed_document(text),
-                    source=f"agent:{self._session_id}",
+                    source=f"agent:{active_session_id}",
                     kind="memory_item",
                     confidence=confidence,
                     importance=importance,
@@ -254,7 +342,7 @@ class LocalRagProvider(MemoryProvider):
                         "durability": durability,
                         "confidence": confidence,
                         "tags": tags,
-                        "session_id": self._session_id,
+                        "session_id": active_session_id,
                     },
                     dedupe_key=f"memory_item\0{scope}\0{scope_identity}\0{normalized_text}",
                 )

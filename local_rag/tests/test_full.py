@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -148,6 +150,325 @@ def test_provider_lifecycle_does_not_create_implicit_memory(tmp_path: Path) -> N
     status = json.loads(provider.handle_tool_call("local_rag_status", {}))
     assert status["entries"] == 0
     assert status["pending_review"] == 0
+
+
+def test_provider_refreshes_project_scope_from_canonical_session_state(tmp_path: Path) -> None:
+    stale_project = tmp_path / "stale"
+    current_project = tmp_path / "current"
+    stale_project.mkdir()
+    current_project.mkdir()
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.execute(
+        "INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)",
+        ("session-a", str(current_project), str(current_project)),
+    )
+    state.commit()
+    state.close()
+
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+        user_id="owner",
+        agent_context="primary",
+        cwd=str(stale_project),
+    )
+    assert provider._store is not None
+    provider._store.add(
+        "default:owner",
+        "The current project uses a Python index.",
+        [0, 1, 0],
+        source="test",
+        kind="memory_item",
+        importance=1.0,
+        project=str(current_project),
+        metadata={"scope": "project", "session_id": "session-a"},
+    )
+
+    recall = provider.prefetch("Python index", session_id="session-a")
+
+    assert "current project uses a Python index" in recall
+    assert provider._project == str(current_project)
+    assert provider._service is not None
+    assert provider._service.allowed_roots == [current_project.resolve()]
+
+
+def test_provider_revokes_project_scope_for_session_without_cwd(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.executemany(
+        "INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)",
+        [
+            ("desktop-session", str(project), str(project)),
+            ("telegram-session", None, None),
+        ],
+    )
+    state.commit()
+    state.close()
+
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "desktop-session",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+        user_id="owner",
+        agent_context="primary",
+        cwd=str(project),
+    )
+    assert provider._store is not None
+    provider._store.add(
+        "default:owner",
+        "The project uses a Python index.",
+        [0, 1, 0],
+        source="test",
+        kind="memory_item",
+        importance=1.0,
+        project=str(project),
+        metadata={"scope": "project", "session_id": "desktop-session"},
+    )
+    assert json.loads(provider.handle_tool_call("local_rag_search", {"query": "Python index"}))["results"]
+
+    provider.on_session_switch("telegram-session")
+
+    assert json.loads(provider.handle_tool_call("local_rag_search", {"query": "Python index"}))["results"] == []
+    assert provider._project == ""
+    assert provider._service is not None
+    assert provider._service.allowed_roots == []
+
+
+def test_provider_revokes_project_scope_for_unknown_session(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.execute(
+        "INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)",
+        ("desktop-session", str(project), str(project)),
+    )
+    state.commit()
+    state.close()
+
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "desktop-session",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+        user_id="owner",
+        agent_context="primary",
+        cwd=str(project),
+    )
+    assert provider._service is not None
+    assert provider._service.allowed_roots == [project.resolve()]
+
+    provider.on_session_switch("missing-session")
+
+    assert provider._project == ""
+    assert provider._service.allowed_roots == []
+
+
+def test_concurrent_prefetch_keeps_each_sessions_project_scope(tmp_path: Path) -> None:
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.executemany(
+        "INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)",
+        [
+            ("session-a", str(project_a), str(project_a)),
+            ("session-b", str(project_b), str(project_b)),
+        ],
+    )
+    state.commit()
+    state.close()
+
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(project_a),
+    )
+    assert provider._service is not None
+    service = provider._service
+    first_search_started = threading.Event()
+    observed: dict[str, list[Path]] = {}
+
+    def blocking_search(query: str, *, limit: int) -> list:
+        if not first_search_started.is_set():
+            first_search_started.set()
+            time.sleep(0.1)
+        observed[query] = list(service.allowed_roots)
+        return []
+
+    service.search = blocking_search  # type: ignore[method-assign]
+    first = threading.Thread(
+        target=provider.prefetch,
+        args=("query-a",),
+        kwargs={"session_id": "session-a"},
+    )
+    second = threading.Thread(
+        target=provider.prefetch,
+        args=("query-b",),
+        kwargs={"session_id": "session-b"},
+    )
+    first.start()
+    assert first_search_started.wait(timeout=1)
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert observed["query-a"] == [project_a.resolve()]
+    assert observed["query-b"] == [project_b.resolve()]
+
+
+def test_prefetch_session_becomes_authority_for_following_tool_calls(tmp_path: Path) -> None:
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.executemany(
+        "INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)",
+        [
+            ("session-a", str(project_a), str(project_a)),
+            ("session-b", str(project_b), str(project_b)),
+        ],
+    )
+    state.commit()
+    state.close()
+
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(project_a),
+    )
+
+    provider.prefetch("Python", session_id="session-b")
+    provider.handle_tool_call("local_rag_search", {"query": "Python"})
+
+    assert provider._session_id == "session-b"
+    assert provider._project == str(project_b.resolve())
+    assert provider._service is not None
+    assert provider._service.session_id == "session-b"
+
+
+def test_concurrent_tool_calls_use_their_prefetch_session_context(tmp_path: Path) -> None:
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.executemany(
+        "INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)",
+        [
+            ("session-a", str(project_a), str(project_a)),
+            ("session-b", str(project_b), str(project_b)),
+        ],
+    )
+    state.commit()
+    state.close()
+
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(project_a),
+    )
+    barrier = threading.Barrier(2)
+    observed: dict[str, tuple[str, str]] = {}
+
+    def inspect_scope(_tool_name: str, _args: dict, **_kwargs) -> str:
+        assert provider._service is not None
+        return json.dumps({"project": provider._project, "session_id": provider._service.session_id})
+
+    provider._handle_tool_call_locked = inspect_scope  # type: ignore[method-assign]
+
+    def run(session_id: str) -> None:
+        provider.prefetch("Python", session_id=session_id)
+        barrier.wait(timeout=2)
+        result = json.loads(provider.handle_tool_call("local_rag_status", {}))
+        observed[session_id] = (result["project"], result["session_id"])
+
+    first = threading.Thread(target=run, args=("session-a",))
+    second = threading.Thread(target=run, args=("session-b",))
+    first.start()
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert observed["session-a"] == (str(project_a.resolve()), "session-a")
+    assert observed["session-b"] == (str(project_b.resolve()), "session-b")
+
+
+def test_concurrent_remember_attributes_each_write_to_its_session(tmp_path: Path) -> None:
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.executemany(
+        "INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)",
+        [("session-a", None, None), ("session-b", None, None)],
+    )
+    state.commit()
+    state.close()
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path),
+    )
+    barrier = threading.Barrier(2)
+
+    def run(session_id: str) -> None:
+        provider.prefetch("Python", session_id=session_id)
+        barrier.wait(timeout=2)
+        result = json.loads(provider.handle_tool_call("local_rag_remember", {
+            "text": f"{session_id} uses Python for indexing.",
+            "scope": "session",
+            "subject": "indexing",
+            "durability": "ongoing",
+        }))
+        assert result == {"stored": True}
+
+    first = threading.Thread(target=run, args=("session-a",))
+    second = threading.Thread(target=run, args=("session-b",))
+    first.start()
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert provider._store is not None
+    rows = provider._store._conn.execute(
+        "SELECT source,metadata_json FROM memories ORDER BY source"
+    ).fetchall()
+    assert [(row[0], json.loads(row[1])["session_id"]) for row in rows] == [
+        ("agent:session-a", "session-a"),
+        ("agent:session-b", "session-b"),
+    ]
+
+
+def test_project_remember_fails_closed_without_canonical_project(tmp_path: Path) -> None:
+    state = sqlite3.connect(tmp_path / "state.db")
+    state.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)")
+    state.execute("INSERT INTO sessions(id,cwd,git_repo_root) VALUES(?,?,?)", ("telegram", None, None))
+    state.commit()
+    state.close()
+    provider = LocalRagProvider(embedder=FakeEmbedder())
+    provider.initialize(
+        "telegram", hermes_home=str(tmp_path), agent_identity="default",
+        user_id="owner", agent_context="primary", cwd=str(tmp_path),
+    )
+
+    result = json.loads(provider.handle_tool_call("local_rag_remember", {
+        "text": "The project uses Python for indexing.",
+        "scope": "project",
+        "subject": "indexing",
+        "durability": "stable",
+    }))
+
+    assert result == {"error": "Project-scoped memory requires an active project"}
 
 
 def test_provider_file_index_tool_is_confined_to_cwd(tmp_path: Path) -> None:
