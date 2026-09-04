@@ -11,6 +11,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import uuid
@@ -19,6 +20,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, SecretStr
+
+# Hermes loads dashboard backends as standalone modules rather than package
+# members. Add only this plugin's parent directory so absolute package imports
+# resolve identically from the dashboard process and from normal Python use.
+_PLUGIN_PARENT = str(Path(__file__).resolve().parents[2])
+if _PLUGIN_PARENT not in sys.path:
+    sys.path.insert(0, _PLUGIN_PARENT)
 
 from local_rag.backfill import plan_key, validate_plan_payload
 from local_rag.policy import IngestDecision, classify_text

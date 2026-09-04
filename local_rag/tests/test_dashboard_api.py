@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -29,6 +31,24 @@ def test_dashboard_backend_loads_as_standalone_plugin_module() -> None:
         assert module.router.routes
     finally:
         sys.modules.pop(name, None)
+
+
+def test_dashboard_backend_loads_outside_repository_cwd(tmp_path: Path) -> None:
+    installed = tmp_path / "plugins" / "local_rag"
+    shutil.copytree(Path(api.__file__).resolve().parents[1], installed)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    script = (
+        "import importlib.util,sys;"
+        f"p={str(installed / 'dashboard' / 'plugin_api.py')!r};"
+        "n='hermes_dashboard_plugin_local_rag_probe';"
+        "s=importlib.util.spec_from_file_location(n,p);"
+        "m=importlib.util.module_from_spec(s);sys.modules[n]=m;"
+        "s.loader.exec_module(m);assert m.router.routes"
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    subprocess.run([sys.executable, "-c", script], cwd=outside, env=environment, check=True)
 
 
 @pytest.fixture()
