@@ -268,7 +268,7 @@
                     h("input", { type: "checkbox", checked: checked, onChange: function () { toggleBackfill(index); }, "aria-label": "Accept candidate " + (index + 1) }),
                     h("span", null,
                       h("textarea", { className: "local-rag-candidate-text", value: item.text, rows: 3, onChange: function (event) { editBackfill(index, event.target.value); } }),
-                      h("span", { className: "local-rag-candidate-meta" }, item.scope + " · " + item.subject + " · confidence " + Math.round(item.confidence * 100) + "%")
+                      h("span", { className: "local-rag-candidate-meta" }, (item.kind || "fact") + " · " + item.scope + " · " + item.subject + " · confidence " + Math.round(item.confidence * 100) + "%")
                     )
                   );
                 })) : h("p", { className: "text-sm text-muted-foreground" }, "No reusable memories were found."),

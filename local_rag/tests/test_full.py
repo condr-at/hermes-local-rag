@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import ValidationError, validate
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR.parent))
@@ -16,6 +17,7 @@ from local_rag.config import LocalRagConfig
 from local_rag.extraction import extract_candidates, summarize_session
 from local_rag import LocalRagProvider
 from local_rag.backfill import _seal_item, apply_plan, apply_plan_to_store, build_plan, extract_session, import_full_export, plan_key
+from local_rag.cli import MEMORY_ITEMS_SCHEMA
 from local_rag.service import LocalRagService
 from local_rag.sessions import import_session_jsonl
 from local_rag.store import MemoryStore
@@ -279,7 +281,7 @@ def test_selective_extractor_accepts_bounded_descriptive_tags() -> None:
     assert extract_session(session, model=model)[0]["tags"] == tags
 
 
-def test_selective_extractor_skips_operational_progress_updates() -> None:
+def test_selective_extractor_keeps_only_semantic_memory_kinds() -> None:
     session = {
         "id": "session-progress", "profile_name": "default", "source": "desktop", "cwd": "/work/project",
         "messages": [{"id": 41, "role": "user", "content": "Run the release checks."}],
@@ -287,10 +289,10 @@ def test_selective_extractor_skips_operational_progress_updates() -> None:
 
     def model(_messages: list[dict[str, str]]) -> str:
         return json.dumps([
-            {"text": "The release verification is in progress and still needs a full test run.",
+            {"text": "Prepare a compact endpoint checklist for the next review.", "kind": "skip",
              "scope": "project", "subject": "release verification", "durability": "ongoing",
              "importance": 0.9, "confidence": 1.0, "tags": ["release"]},
-            {"text": "The project uses review-before-apply for historical memory backfill.",
+            {"text": "The project uses review-before-apply for historical memory backfill.", "kind": "decision",
              "scope": "project", "subject": "backfill review", "durability": "stable",
              "importance": 0.9, "confidence": 1.0, "tags": ["backfill"]},
         ])
@@ -298,6 +300,29 @@ def test_selective_extractor_skips_operational_progress_updates() -> None:
     assert [item["text"] for item in extract_session(session, model=model)] == [
         "The project uses review-before-apply for historical memory backfill."
     ]
+
+
+def test_historical_extraction_schema_requires_memory_kind() -> None:
+    item = {"text": "The project uses review-before-apply.", "scope": "project", "subject": "review",
+            "durability": "stable", "importance": 0.9, "confidence": 1.0, "tags": []}
+
+    with pytest.raises(ValidationError):
+        validate(instance={"items": [item]}, schema=MEMORY_ITEMS_SCHEMA)
+
+
+def test_backfill_apply_rejects_accepted_skip_item(tmp_path: Path) -> None:
+    plan = tmp_path / "plan.json"
+    item = {
+        "text": "Prepare a compact endpoint checklist for the next review.", "kind": "skip",
+        "scope": "project", "subject": "review task", "durability": "ongoing",
+        "importance": 0.8, "confidence": 1.0, "tags": [], "accepted": True,
+        "namespace": "default:local", "project": "/work/project",
+        "provenance": {"origin": "historical-extraction", "session_id": "session-skip", "message_ids": [1]},
+    }
+    plan.write_text(json.dumps({"schema_version": 1, "items": [item]}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot be accepted"):
+        apply_plan(plan, index=lambda _item: True)
 
 
 def test_selective_extractor_rejects_secret_like_model_output() -> None:

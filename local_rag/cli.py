@@ -26,9 +26,10 @@ MEMORY_ITEMS_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["text", "scope", "subject", "durability", "importance", "confidence", "tags"],
+                "required": ["text", "kind", "scope", "subject", "durability", "importance", "confidence", "tags"],
                 "properties": {
                     "text": {"type": "string", "minLength": 12, "maxLength": 2000},
+                    "kind": {"type": "string", "enum": ["fact", "preference", "decision", "constraint", "skip"]},
                     "scope": {"type": "string", "enum": ["global", "project", "session"]},
                     "subject": {"type": "string", "minLength": 1, "maxLength": 200},
                     "durability": {"type": "string", "enum": ["transient", "ongoing", "stable"]},
