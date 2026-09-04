@@ -17,6 +17,7 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 from local_rag.chunking import chunk_text
 from local_rag.config import LocalRagConfig
+import local_rag.database as database_module
 from local_rag.database import canonical_database_path
 from local_rag.extraction import extract_candidates, summarize_session
 from local_rag import LocalRagProvider
@@ -250,6 +251,10 @@ def test_stale_target_wal_cannot_override_migrated_legacy_data(tmp_path: Path) -
     legacy.add("default:owner", "authoritative legacy record", [1.0, 0.0, 0.0], source="legacy:test")
     legacy.close()
     assert Path(f"{target}-wal").exists()
+    Path(f"{target}-shm").write_bytes(b"stale shared memory")
+    Path(f"{target}-journal").write_bytes(b"stale journal")
+    assert Path(f"{target}-shm").exists()
+    assert Path(f"{target}-journal").exists()
 
     canonical_database_path(directory, "memory")
 
@@ -259,6 +264,160 @@ def test_stale_target_wal_cannot_override_migrated_legacy_data(tmp_path: Path) -
     assert [row.text for row in rows] == ["authoritative legacy record"]
     assert not Path(f"{target}-wal").exists()
     assert not Path(f"{target}-shm").exists()
+    assert not Path(f"{target}-journal").exists()
+
+
+def test_concurrent_new_version_migrators_serialize_without_data_loss(tmp_path: Path) -> None:
+    directory = tmp_path / "local-rag"
+    legacy = MemoryStore(directory / "memory.sqlite", dimensions=3)
+    legacy.add("default:owner", "preserved concurrent record", [1.0, 0.0, 0.0], source="legacy:test")
+    legacy.close()
+    script = (
+        "from pathlib import Path; import sys; "
+        "from local_rag.database import canonical_database_path; "
+        "print(canonical_database_path(Path(sys.argv[1]), 'memory'))"
+    )
+
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(directory)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    results = [process.communicate(timeout=15) for process in processes]
+
+    assert [process.returncode for process in processes] == [0, 0], results
+    migrated = MemoryStore(directory / "memory.db", dimensions=3)
+    rows = migrated.search("default:owner", "concurrent", [1.0, 0.0, 0.0], limit=10)
+    migrated.close()
+    assert [row.text for row in rows] == ["preserved concurrent record"]
+    assert not (directory / "memory.sqlite").exists()
+
+
+def test_replace_failure_preserves_legacy_and_cleans_temporary_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "local-rag"
+    legacy = MemoryStore(directory / "memory.sqlite", dimensions=3)
+    legacy.add("default:owner", "legacy survives replace failure", [1.0, 0.0, 0.0], source="legacy:test")
+    legacy.close()
+
+    def fail_replace(source: Path, target: Path) -> None:
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(database_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected replace failure"):
+        canonical_database_path(directory, "memory")
+
+    assert (directory / "memory.sqlite").exists()
+    assert not (directory / "memory.db").exists()
+    assert not list(directory.glob(".memory.*.db*"))
+
+
+def test_installed_integrity_failure_preserves_legacy_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "local-rag"
+    legacy = MemoryStore(directory / "memory.sqlite", dimensions=3)
+    legacy.add("default:owner", "legacy survives integrity failure", [1.0, 0.0, 0.0], source="legacy:test")
+    legacy.close()
+    checks = 0
+    require_integrity = database_module._require_integrity
+
+    def fail_installed_check(connection: sqlite3.Connection, path: Path) -> None:
+        nonlocal checks
+        checks += 1
+        require_integrity(connection, path)
+        if checks == 2:
+            raise RuntimeError("injected installed integrity failure")
+
+    monkeypatch.setattr(database_module, "_require_integrity", fail_installed_check)
+    with pytest.raises(RuntimeError, match="injected installed integrity failure"):
+        canonical_database_path(directory, "memory")
+
+    assert checks == 2
+    assert (directory / "memory.sqlite").exists()
+    assert (directory / "memory.db").exists()
+
+
+def test_retry_after_legacy_deletion_failure_rebuilds_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "local-rag"
+    legacy_path = directory / "memory.sqlite"
+    legacy = MemoryStore(legacy_path, dimensions=3)
+    legacy.add("default:owner", "legacy remains authoritative", [1.0, 0.0, 0.0], source="legacy:test")
+    legacy.close()
+    unlink_database = database_module._unlink_database
+    failed = False
+
+    def fail_legacy_deletion(path: Path) -> None:
+        nonlocal failed
+        if path == legacy_path and not failed:
+            failed = True
+            raise OSError("injected legacy deletion failure")
+        unlink_database(path)
+
+    monkeypatch.setattr(database_module, "_unlink_database", fail_legacy_deletion)
+    with pytest.raises(OSError, match="injected legacy deletion failure"):
+        canonical_database_path(directory, "memory")
+    assert legacy_path.exists()
+    assert (directory / "memory.db").exists()
+
+    monkeypatch.setattr(database_module, "_unlink_database", unlink_database)
+    canonical_database_path(directory, "memory")
+    migrated = MemoryStore(directory / "memory.db", dimensions=3)
+    rows = migrated.search("default:owner", "authoritative", [1.0, 0.0, 0.0], limit=10)
+    migrated.close()
+    assert [row.text for row in rows] == ["legacy remains authoritative"]
+    assert not legacy_path.exists()
+
+
+def test_migration_fsyncs_install_before_verification_and_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "local-rag"
+    legacy_path = directory / "memory.sqlite"
+    legacy = MemoryStore(legacy_path, dimensions=3)
+    legacy.close()
+    events: list[str] = []
+    replace = database_module.os.replace
+    require_integrity = database_module._require_integrity
+    unlink_database = database_module._unlink_database
+
+    def record_fsync(path: Path) -> None:
+        events.append("fsync-directory")
+
+    def record_replace(source: Path, target: Path) -> None:
+        events.append("replace-target")
+        replace(source, target)
+
+    def record_integrity(connection: sqlite3.Connection, path: Path) -> None:
+        events.append("integrity-target" if path == directory / "memory.db" else "integrity-temporary")
+        require_integrity(connection, path)
+
+    def record_unlink(path: Path) -> None:
+        if path == legacy_path:
+            events.append("delete-legacy")
+        unlink_database(path)
+
+    monkeypatch.setattr(database_module, "_fsync_directory", record_fsync)
+    monkeypatch.setattr(database_module.os, "replace", record_replace)
+    monkeypatch.setattr(database_module, "_require_integrity", record_integrity)
+    monkeypatch.setattr(database_module, "_unlink_database", record_unlink)
+
+    canonical_database_path(directory, "memory")
+
+    replace_index = events.index("replace-target")
+    verification_index = events.index("integrity-target")
+    deletion_index = events.index("delete-legacy")
+    assert "fsync-directory" in events[:replace_index]
+    assert "fsync-directory" in events[replace_index + 1 : verification_index]
+    assert replace_index < verification_index < deletion_index
+    assert "fsync-directory" in events[deletion_index + 1 :]
 
 
 def test_provider_refreshes_project_scope_from_canonical_session_state(tmp_path: Path) -> None:
