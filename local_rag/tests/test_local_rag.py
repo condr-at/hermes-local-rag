@@ -484,8 +484,14 @@ def test_standalone_backfill_entrypoints_route_to_selective_handler(monkeypatch:
 def test_package_declares_hermes_memory_provider_entry_point() -> None:
     project_root = Path(__file__).resolve().parents[2]
     metadata = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+    package_version = metadata["project"]["version"]
 
-    assert metadata["project"]["version"] == "1.3.1"
+    assert package_version == "1.3.1"
     assert metadata["project"]["entry-points"]["hermes_agent.memory_providers"] == {
         "local_rag": "local_rag:register",
     }
+    assert f"version: {package_version}" in (project_root / "local_rag" / "plugin.yaml").read_text(encoding="utf-8")
+    dashboard_manifest = json.loads(
+        (project_root / "local_rag" / "dashboard" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert dashboard_manifest["version"] == package_version
