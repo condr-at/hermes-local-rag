@@ -39,7 +39,10 @@ def test_dashboard_backend_loads_outside_repository_cwd(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     script = (
-        "import importlib.util,sys;"
+        "import importlib.util,sys,types;"
+        "agent=types.ModuleType('agent');memory_provider=types.ModuleType('agent.memory_provider');"
+        "memory_provider.MemoryProvider=type('MemoryProvider',(),{});agent.memory_provider=memory_provider;"
+        "sys.modules['agent']=agent;sys.modules['agent.memory_provider']=memory_provider;"
         f"p={str(installed / 'dashboard' / 'plugin_api.py')!r};"
         "n='hermes_dashboard_plugin_local_rag_probe';"
         "s=importlib.util.spec_from_file_location(n,p);"
