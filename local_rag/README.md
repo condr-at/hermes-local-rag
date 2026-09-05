@@ -5,7 +5,10 @@ User-local `MemoryProvider` for private hybrid recall. It lives outside the Herm
 ## Storage and isolation
 
 - Text: `~/.hermes/local-rag/memory.db` (SQLite WAL + FTS5 + local vectors)
-- Images: `~/.hermes/local-rag/visual.db`
+- Curated images: `~/.hermes/local-rag/curated-images.db` and managed `images/` originals.
+- Legacy `visual.db` is preserved, not automatically promoted into curated recall.
+- Version 1.4.0 shares one private inference daemon per profile, started on demand.
+  See [upgrade and recovery details](https://github.com/condr-at/hermes-local-rag/blob/main/UPGRADE.md).
 - Namespace: `<profile>:<platform-user>`, with Desktop/CLI mapped to `<profile>:local`
 - Model weights are shared read-only; records are always filtered by namespace before ranking.
 
@@ -26,9 +29,9 @@ The token is passed directly to `huggingface_hub.login`, is never placed in a su
 
 ## Ingestion
 
-- User turns and session summaries are retained indefinitely by default.
+- Raw user turns and session summaries are not automatically ingested.
 - `~/.hermes/local-rag/config.json` can set `episodic_ttl_days` and `summary_ttl_days` to positive day counts; `null` means no expiry.
-- Explicit preferences, decisions, and environment statements enter a review queue.
+- Explicit policy-validated atomic memory writes are admitted directly; historical backfill requires review.
 - Approved candidates and built-in Hermes memory writes become durable records.
 - Assistant claims and raw tool output are never promoted as user facts.
 - Secret-like content, `.env`, private keys, unsupported/binary files, oversized files, and paths outside the current project root are rejected before embedding.

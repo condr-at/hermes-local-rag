@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-local-rag"
-version = "1.3.3"
+version = "1.4.0"
 description = "Private local hybrid text and visual memory provider for Hermes Agent"
 readme = "README.md"
 license = "MIT"
@@ -32,6 +32,7 @@ Issues = "https://github.com/condr-at/hermes-local-rag/issues"
 
 [project.scripts]
 hermes-local-rag = "local_rag.cli:main"
+hermes-local-rag-inference = "local_rag.inference:main"
 hermes-local-rag-backfill = "local_rag.cli:backfill_main"
 
 [project.entry-points."hermes_agent.memory_providers"]
@@ -39,6 +40,9 @@ local_rag = "local_rag:register"
 
 [dependency-groups]
 dev = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "pytest>=9,<10"]
+
+[tool.hatch.build]
+exclude = ["local_rag/provider 2.py", "evaluation/**", "**/*.db", "**/*.db-*", "**/*.sqlite*", "**/*.zip", "**/*.jsonl", ".env*"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["local_rag"]

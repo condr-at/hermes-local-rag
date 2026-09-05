@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .embedder import get_shared_embedder
+from .inference import InferenceClient
 from .backfill import apply_plan_to_store, build_plan, plan_key
 from .config import LocalRagConfig
 from .database import canonical_database_path
@@ -48,10 +48,10 @@ def register_backfill_cli(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="backfill_command", required=True)
     preview = sub.add_parser("preview", help="Extract a review plan without writing memory")
     preview.add_argument("--plan", required=True)
-    preview.add_argument("--home", default=str(Path.home() / ".hermes"))
+    preview.add_argument("--home", default=os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     apply = sub.add_parser("apply", help="Apply only explicitly accepted review items")
     apply.add_argument("--plan", required=True)
-    apply.add_argument("--home", default=str(Path.home() / ".hermes"))
+    apply.add_argument("--home", default=os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 
 
 def _structured_model(llm):
@@ -169,10 +169,16 @@ def backfill_main() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="local-rag", description="Inspect and maintain Hermes local RAG")
-    parser.add_argument("--home", default=str(Path.home() / ".hermes"))
+    parser.add_argument("--home", default=os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     parser.add_argument("--namespace", default="default:local")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
+    sub.add_parser("restore-images", help="Explicit recovery: materialize ALL image originals from the DB; run before starting restored home")
+    reindex_image = sub.add_parser("reindex-image", help="Refresh one scoped image's OCR/embeddings, preserving its ID and version")
+    reindex_image.add_argument("id", type=int)
+    reindex_image.add_argument("--project", default="")
+    reindex_image.add_argument("--session", default="")
+    reindex_image.add_argument("--description")
     search = sub.add_parser("search")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=5)
@@ -197,6 +203,28 @@ def main() -> int:
     if args.command == "backfill":
         return local_rag_command(args)
 
+    if args.command in {"restore-images", "reindex-image"}:
+        from .images import CuratedImages
+        home = Path(args.home).expanduser()
+        if not (home / "local-rag" / "curated-images.db").is_file():
+            raise ValueError("No curated-images.db at the selected home")
+        # Restore deliberately does not instantiate an inference client or text DB.
+        client = None
+        if args.command == "reindex-image":
+            config = LocalRagConfig.load(home)
+            client = InferenceClient(home, dimensions=config.embedding_dimensions)
+        images = CuratedImages(home, text=client, visual=lambda: client)
+        try:
+            if args.command == "restore-images":
+                output = {"materialized": images.materialize()}
+            else:
+                output = {"image": images.reindex(args.namespace, args.id, project=args.project,
+                    session=args.session, description=args.description)}
+            print(json.dumps(output, ensure_ascii=False))
+            return 0
+        finally:
+            images.close()
+
     db = canonical_database_path(Path(args.home).expanduser() / "local-rag", "memory")
     config = LocalRagConfig.load(args.home)
     store = MemoryStore(db, dimensions=config.embedding_dimensions)
@@ -212,7 +240,7 @@ def main() -> int:
         elif args.command == "prune":
             output = {"removed": store.prune(args.namespace)}
         else:
-            embedder = get_shared_embedder(config.embedding_dimensions)
+            embedder = InferenceClient(Path(args.home).expanduser(), dimensions=config.embedding_dimensions)
             roots = [Path(getattr(args, "root", Path.cwd())).expanduser().resolve()]
             service = LocalRagService(store=store, embedder=embedder, namespace=args.namespace, allowed_roots=roots)
             if args.command == "search":

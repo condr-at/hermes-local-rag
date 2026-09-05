@@ -9,7 +9,7 @@ from ai_edge_litert.interpreter import Interpreter
 from tokenizers import Tokenizer
 
 
-_shared_embedders: dict[int, "LiteRTEmbeddingGemma"] = {}
+_shared_embedders: dict = {}
 _shared_lock = threading.Lock()
 
 
@@ -53,8 +53,12 @@ class LiteRTEmbeddingGemma:
         return output.astype(np.float32, copy=False).tolist()
 
 
-def get_shared_embedder(dimensions: int = 512) -> LiteRTEmbeddingGemma:
+def get_shared_embedder(dimensions: int = 512):
+    """Compatibility factory: only the service may own resident model instances."""
+    from .inference import InferenceClient
+    home = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser().resolve()
+    key = (str(home), dimensions)
     with _shared_lock:
-        if dimensions not in _shared_embedders:
-            _shared_embedders[dimensions] = LiteRTEmbeddingGemma(dimensions=dimensions)
-        return _shared_embedders[dimensions]
+        if key not in _shared_embedders:
+            _shared_embedders[key] = InferenceClient(home, dimensions=dimensions)
+        return _shared_embedders[key]

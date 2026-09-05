@@ -1,5 +1,10 @@
 # Hermes Local RAG
 
+> **1.4.0:** shared private inference daemon and selectively curated durable images.
+> Read [UPGRADE.md](UPGRADE.md) before upgrading: image-save approval metadata is now
+> required, legacy images are not automatically promoted, and inference starts on demand.
+> See the [synthetic benchmark and its limitations](evaluation/README.md).
+
 [![Hermes Local RAG — private local memory that keeps the useful card and bins the noise](https://raw.githubusercontent.com/condr-at/hermes-local-rag/main/assets/branding/local-rag-preview-1600x900.webp)](https://github.com/condr-at/hermes-local-rag)
 
 Private, fully local hybrid text and visual memory for [Hermes Agent](https://github.com/NousResearch/hermes-agent), implemented through the official `MemoryProvider` extension point.
@@ -15,7 +20,7 @@ Private, fully local hybrid text and visual memory for [Hermes Agent](https://gi
 - Project- and session-aware retrieval boundaries; built-in Markdown memory is mirrored as global durable context
 - Project-root-confined text-file indexing with secret and prompt-injection rejection
 - Optional CLIP ViT-B/32 ONNX visual index in a separate 512d vector space
-- Button-driven setup inside Hermes Dashboard; no model server, vector database server, or Hermes core patch
+- Button-driven setup inside Hermes Dashboard; no vector database server or Hermes core patch. One private local inference service starts on the first embedding request (see UPGRADE.md).
 
 ## Install
 
@@ -23,10 +28,10 @@ Published package: [hermes-local-rag on PyPI](https://pypi.org/project/hermes-lo
 
 For packaged-provider discovery, install it into the same Python environment that runs Hermes:
 
-> Upgrading from 1.3.2 or older: stop every Hermes Desktop and gateway process first. Version 1.3.3 performs a one-time, integrity-checked migration from `memory.sqlite` / `visual.sqlite` to backup-safe `.db` files and removes the legacy files after success.
+> Upgrading from 1.3.2 or older: stop every Hermes Desktop and gateway process first. Version 1.4.0 performs a one-time, integrity-checked migration from `memory.sqlite` / `visual.sqlite` to backup-safe `.db` files and removes the legacy files after success.
 
 ```bash
-python -m pip install hermes-local-rag==1.3.3
+python -m pip install hermes-local-rag==1.4.0
 hermes config set memory.provider local_rag
 ```
 

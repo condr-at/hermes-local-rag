@@ -50,13 +50,15 @@ class ClipOnnxEmbedder:
         return self._normalize(output)
 
 
-_shared: ClipOnnxEmbedder | None = None
+_shared: dict = {}
 _shared_lock = threading.Lock()
 
 
-def get_shared_visual_embedder() -> ClipOnnxEmbedder:
-    global _shared
+def get_shared_visual_embedder():
+    import os
+    from .inference import InferenceClient
+    home = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser().resolve()
     with _shared_lock:
-        if _shared is None:
-            _shared = ClipOnnxEmbedder()
-        return _shared
+        if home not in _shared:
+            _shared[home] = InferenceClient(home)
+        return _shared[home]

@@ -352,13 +352,13 @@ def apply_plan(plan_path: Path, *, index: Callable[[dict[str, Any]], bool], sign
 def apply_plan_to_store(plan_path: Path, *, hermes_home: Path, embedder: Any | None = None) -> dict[str, int]:
     """Apply a reviewed plan to the Local RAG store using production invariants."""
     from .config import LocalRagConfig
-    from .embedder import get_shared_embedder
+    from .inference import InferenceClient
     from .policy import IngestDecision, classify_text
     from .store import MemoryStore
 
     home = Path(hermes_home).expanduser().resolve()
     config = LocalRagConfig.load(home)
-    active_embedder = embedder or get_shared_embedder(config.embedding_dimensions)
+    active_embedder = embedder or InferenceClient(hermes_home, dimensions=config.embedding_dimensions)
     store = MemoryStore(
         canonical_database_path(home / "local-rag", "memory"),
         dimensions=active_embedder.dimensions,

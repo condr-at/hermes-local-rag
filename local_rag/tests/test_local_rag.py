@@ -486,7 +486,7 @@ def test_package_declares_hermes_memory_provider_entry_point() -> None:
     metadata = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     package_version = metadata["project"]["version"]
 
-    assert package_version == "1.3.3"
+    assert package_version == "1.4.0"
     assert metadata["project"]["entry-points"]["hermes_agent.memory_providers"] == {
         "local_rag": "local_rag:register",
     }

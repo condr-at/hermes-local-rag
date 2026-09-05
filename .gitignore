@@ -2,6 +2,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.venv-upgrade/
+.test-tmp/
+.build-upgrade/
+.it-*/
+.bk-*/
+.e2-*/
 dist/
 !local_rag/dashboard/dist/
 !local_rag/dashboard/dist/**
@@ -17,3 +23,12 @@ models/
 *.sqlite*
 *.jsonl
 .env*
+
+# Private evaluation runs and local duplicate source are never distributable.
+evaluation/*
+!evaluation/README.md
+local_rag/provider 2.py
+*.db
+*.db-*
+*.zip
+*.tar.gz
