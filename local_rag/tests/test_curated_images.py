@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 from PIL import Image
 import pytest
-from local_rag import LocalRagProvider
 from local_rag.config import LocalRagConfig
 
 
@@ -70,11 +69,13 @@ def test_scopes_versions_derivatives_and_shared_blob_deletion(tmp_path):
 
 
 def test_image_tool_exposes_explicit_version_history():
+    from local_rag import LocalRagProvider
     schema = next(s for s in LocalRagProvider(embedder=Text()).get_tool_schemas() if s['name'] == 'local_rag_search_images')
     assert 'include_history' in schema['parameters']['properties']
 
 
 def test_curated_image_is_durable_searchable_and_deleted(tmp_path):
+    from local_rag import LocalRagProvider
     root = tmp_path / 'project'
     root.mkdir()
     original = root / 'logo.png'
