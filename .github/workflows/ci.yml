@@ -10,12 +10,15 @@ permissions:
 jobs:
   test:
     runs-on: macos-14
+    strategy:
+      matrix:
+        python: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: uv sync --all-groups
+          python-version: ${{ matrix.python }}
+      - run: uv sync --frozen --all-groups
       - run: uv run pytest
       - run: uv build

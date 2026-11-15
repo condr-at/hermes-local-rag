@@ -30,6 +30,7 @@ if _PLUGIN_PARENT not in sys.path:
 
 from local_rag.backfill import plan_key, validate_plan_payload
 from local_rag.database import canonical_database_path
+from local_rag.runtime import python_command, hermes_command, hf_command
 from local_rag.policy import IngestDecision, classify_text
 
 router = APIRouter()
@@ -54,19 +55,31 @@ def _home() -> Path:
 
 
 def _python() -> Path:
-    configured = os.environ.get("HERMES_PYTHON")
-    return Path(configured) if configured else _home() / "hermes-agent" / "venv" / "bin" / "python"
+    # The dashboard already runs inside Hermes; never mutate or guess a generation.
+    return Path(sys.executable)
 
 
-def _hf() -> Path:
-    return _python().parent / "hf"
+def _profile_args() -> list[str]:
+    home = _home()
+    return ["--profile", home.name if home.parent.name == "profiles" else "default"]
+
+
+def _hermes_launcher() -> list[str] | None:
+    try:
+        return hermes_command()
+    except (ImportError, OSError):
+        return None
+
+
+def _hf() -> list[str]:
+    return hf_command()
 
 
 def _clean_env(*, include_plugin: bool = False) -> dict[str, str]:
     env = {key: os.environ[key] for key in ("HOME", "PATH", "LANG", "LC_ALL", "TMPDIR") if key in os.environ}
     env["HERMES_HOME"] = str(_home())
     if include_plugin:
-        env["PYTHONPATH"] = str(_home() / "plugins")
+        env["PYTHONPATH"] = _PLUGIN_PARENT
     return env
 
 
@@ -98,7 +111,7 @@ def _start(kind: str, worker) -> dict[str, str]:
         try:
             worker(job)
             with _LOCK:
-                job.update(state="complete", detail="Completed successfully")
+                job.update(state="complete", detail=job.pop("completion_detail", "Completed successfully"))
         except Exception as exc:
             with _LOCK:
                 job.update(state="failed", detail=str(exc))
@@ -116,13 +129,15 @@ def _model_state() -> tuple[bool, bool]:
 
 def _auth_status() -> dict[str, Any]:
     hf = _hf()
-    if not hf.is_file():
-        return {"available": False, "authenticated": False, "guidance": "Install dependencies first, then sign in with the Hugging Face CLI."}
     try:
-        result = subprocess.run([str(hf), "auth", "whoami"], capture_output=True, text=True, timeout=20, env=_clean_env())
+        probe = subprocess.run(python_command("-c", "from huggingface_hub.cli.hf import main"),
+                               capture_output=True, timeout=20, env=_clean_env())
+        if probe.returncode:
+            return {"available": False, "authenticated": False, "guidance": "Install dependencies and restart Hermes before signing in."}
+        result = subprocess.run([*hf, "auth", "whoami"], capture_output=True, text=True, timeout=20, env=_clean_env())
         authenticated = result.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
-        authenticated = False
+        return {"available": False, "authenticated": False, "guidance": "Hugging Face runtime probe failed."}
     return {"available": True, "authenticated": authenticated, "guidance": "Paste a read-only Hugging Face token below. It is handled locally and never returned or logged."}
 
 
@@ -136,11 +151,11 @@ def _status() -> dict[str, Any]:
             config = json.loads(config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             config = {}
-    hermes = shutil.which("hermes")
+    hermes = _hermes_launcher()
     provider = None
     if hermes:
         try:
-            check = subprocess.run([hermes, "config", "get", "memory.provider"], capture_output=True, text=True, timeout=20, env=_clean_env())
+            check = subprocess.run([*hermes, *_profile_args(), "config", "get", "memory.provider"], capture_output=True, text=True, timeout=20, env=_clean_env())
             if check.returncode == 0:
                 provider = check.stdout.strip().strip('"')
         except (subprocess.TimeoutExpired, OSError):
@@ -148,7 +163,7 @@ def _status() -> dict[str, Any]:
     deps = False
     if _python().is_file():
         try:
-            check = subprocess.run([str(_python()), "-c", "import numpy, tokenizers, PIL, onnxruntime, huggingface_hub"], capture_output=True, timeout=30, env=_clean_env())
+            check = subprocess.run(python_command("-c", "import numpy, tokenizers, PIL, onnxruntime, huggingface_hub, ai_edge_litert.interpreter, jsonschema"), capture_output=True, timeout=30, env=_clean_env())
             deps = check.returncode == 0
         except (subprocess.TimeoutExpired, OSError):
             # A path can exist but still be an invalid or stale executable.
@@ -263,27 +278,35 @@ def setup_auth(request: AuthRequest):
 
 @router.post("/setup/dependencies", status_code=202)
 def install_dependencies():
-    if not _python().is_file():
-        raise HTTPException(409, "Hermes Python environment was not found")
-    return _start("dependencies", lambda job: _run([str(_python()), "-m", "pip", "install", *DEPENDENCIES], job))
+    hermes = _hermes_launcher()
+    if not hermes:
+        raise HTTPException(409, "Hermes launcher was not found on PATH")
+
+    def worker(job):
+        _run([*hermes, *_profile_args(), "plugins", "enable", "local_rag"], job)
+        job["restart_required"] = True
+        job["completion_detail"] = (
+            "Native enable completed. Restart Hermes and its dashboard before continuing setup. "
+            "This running process has not been repaired. If dependencies remain unavailable after restart, "
+            "run `hermes pm install` for this profile, retry enable, and restart."
+        )
+    return _start("dependencies", worker)
 
 
 def download(request: DownloadRequest):
     if request.mode not in {"text", "visual"}:
         raise HTTPException(422, "mode must be text or visual")
     hf = _hf()
-    if not hf.is_file():
-        raise HTTPException(409, "Hugging Face CLI is unavailable; install dependencies first")
 
     def worker(job):
         text_dir = _home() / "models" / "embeddinggemma-litert"
         text_dir.mkdir(parents=True, exist_ok=True)
-        _run([str(hf), "download", TEXT_REPO, *TEXT_FILES, "--local-dir", str(text_dir)], job)
-        _run([str(hf), "download", TOKENIZER_REPO, *TOKENIZER_FILES, "--local-dir", str(text_dir)], job)
+        _run([*hf, "download", TEXT_REPO, *TEXT_FILES, "--local-dir", str(text_dir)], job)
+        _run([*hf, "download", TOKENIZER_REPO, *TOKENIZER_FILES, "--local-dir", str(text_dir)], job)
         if request.mode == "visual":
             visual_dir = _home() / "models" / "clip-onnx"
             visual_dir.mkdir(parents=True, exist_ok=True)
-            _run([str(hf), "download", VISUAL_REPO, *VISUAL_FILES, "--local-dir", str(visual_dir)], job)
+            _run([*hf, "download", VISUAL_REPO, *VISUAL_FILES, "--local-dir", str(visual_dir)], job)
     return _start("download", worker)
 
 @router.post("/setup/models", status_code=202)
@@ -387,7 +410,7 @@ def _reject_during_backfill_preview() -> None:
 def setup_backfill_preview(request: ConfirmRequest):
     if not request.confirm:
         raise HTTPException(400, "Backfill preview requires explicit confirmation")
-    hermes = shutil.which("hermes")
+    hermes = _hermes_launcher()
     if not hermes:
         raise HTTPException(409, "Hermes CLI was not found on PATH")
 
@@ -395,7 +418,7 @@ def setup_backfill_preview(request: ConfirmRequest):
         folder = _home() / "local-rag"
         folder.mkdir(parents=True, exist_ok=True)
         plan = _backfill_plan_path()
-        _run([hermes, "local_rag", "preview", "--plan", str(plan), "--home", str(_home())], job)
+        _run([*hermes, *_profile_args(), "local_rag", "preview", "--plan", str(plan), "--home", str(_home())], job)
         if not plan.is_file():
             raise RuntimeError("Backfill preview command did not create a review plan")
         os.chmod(plan, 0o600)
@@ -441,14 +464,14 @@ def review_backfill_plan(request: BackfillReviewRequest):
 def apply_backfill_plan(request: BackfillApplyRequest):
     if not request.confirm:
         raise HTTPException(400, "Backfill apply requires explicit confirmation")
-    hermes = shutil.which("hermes")
+    hermes = _hermes_launcher()
     if not hermes:
         raise HTTPException(409, "Hermes CLI was not found on PATH")
     snapshot: Path | None = None
     def worker(job):
         assert snapshot is not None
         try:
-            _run([hermes, "local_rag", "apply", "--plan", str(snapshot), "--home", str(_home())], job)
+            _run([*hermes, *_profile_args(), "local_rag", "apply", "--plan", str(snapshot), "--home", str(_home())], job)
         finally:
             snapshot.unlink(missing_ok=True)
 
@@ -470,10 +493,10 @@ def apply_backfill_plan(request: BackfillApplyRequest):
 
 
 def activate():
-    hermes = shutil.which("hermes")
+    hermes = _hermes_launcher()
     if not hermes:
         raise HTTPException(409, "Hermes CLI was not found on PATH")
-    result = subprocess.run([hermes, "config", "set", "memory.provider", "local_rag"], capture_output=True, text=True, timeout=30, env=_clean_env())
+    result = subprocess.run([*hermes, *_profile_args(), "config", "set", "memory.provider", "local_rag"], capture_output=True, text=True, timeout=30, env=_clean_env())
     if result.returncode:
         raise HTTPException(500, "Activation failed; check Hermes configuration permissions")
     return {"active": True, "restart_required": True}
@@ -496,7 +519,7 @@ def health():
     if not problems:
         env = _clean_env(include_plugin=True)
         try:
-            check = subprocess.run([str(_python()), "-c", "from local_rag import LocalRagProvider; assert LocalRagProvider().is_available()"], capture_output=True, text=True, env=env, timeout=90)
+            check = subprocess.run(python_command("-c", "from local_rag import LocalRagProvider; raise SystemExit(0 if LocalRagProvider().is_available() else 1)"), capture_output=True, text=True, env=env, timeout=90)
             provider_ok = check.returncode == 0
         except (subprocess.TimeoutExpired, OSError):
             provider_ok = False

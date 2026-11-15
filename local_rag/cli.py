@@ -119,15 +119,14 @@ def _build_from_trusted_host_export(args: argparse.Namespace, *, model) -> dict:
     export = Path(export_name)
     os.fchmod(descriptor, 0o600)
     os.close(descriptor)
-    executable = (home / "hermes-agent" / "hermes").resolve()
-    python = home / "hermes-agent" / "venv" / "bin" / "python"
-    if not executable.is_file() or not python.is_file():
-        export.unlink(missing_ok=True)
-        raise RuntimeError("Managed Hermes runtime was not found")
+    from .runtime import hermes_command
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    environment["HERMES_HOME"] = str(home)
+    profile = home.name if home.parent.name == "profiles" else "default"
     try:
-        subprocess.run([str(python), str(executable), "sessions", "export", str(export)], check=True, env=environment)
+        subprocess.run(hermes_command(["--profile", profile, "sessions", "export", str(export)]), check=True, env=environment)
         return build_plan(export, Path(args.plan), model=model, signing_key=plan_key(home, create=True))
     finally:
         export.unlink(missing_ok=True)

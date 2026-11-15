@@ -49,6 +49,7 @@
 
     const [acceptedTerms, setAcceptedTerms] = useState(false);
     const [hfToken, setHfToken] = useState("");
+    const [restartRequired, setRestartRequired] = useState(false);
     const initialized = useRef(false);
 
     const refresh = useCallback(function () {
@@ -82,7 +83,8 @@
           setJob(next);
           if (next.state !== "running") {
             setBusy(null);
-            setMessage({ ok: next.state === "complete", text: next.state === "complete" ? "Operation completed successfully." : next.detail });
+            if (next.restart_required) setRestartRequired(true);
+            setMessage({ ok: next.state === "complete", text: next.detail || (next.state === "complete" ? "Operation completed successfully." : "Operation failed.") });
             refresh();
             if (next.state === "complete" && next.kind === "backfill-preview") loadBackfillPlan();
           }
@@ -187,6 +189,7 @@
         h(Button, { variant: "outline", onClick: refresh, disabled: !!busy }, "Refresh status")
       ),
       message ? h("div", { className: "local-rag-message " + (message.ok ? "is-ok" : "is-error"), role: "status" }, message.text) : null,
+      restartRequired ? h("div", { className: "local-rag-message", role: "alert" }, "Restart Hermes and its dashboard before continuing setup. Dependencies were admitted, but this running process has not been repaired.") : null,
       h("div", { className: "local-rag-layout" },
         h(Card, { className: "local-rag-status" },
           h(CardHeader, null, h(CardTitle, null, "Setup status")),
@@ -216,7 +219,7 @@
                 !status.hf.authenticated && status.dependencies_installed ? h("div", { className: "local-rag-actions" },
                   h(Input, { type: "password", value: hfToken, autoComplete: "off", placeholder: "hf_… read token", "aria-label": "Hugging Face token", onChange: function (e) { setHfToken(e.target.value); } }),
                   h(Button, { type: "button", variant: "outline", onClick: function () { window.open(TOKEN_URL, "_blank", "noopener,noreferrer"); } }, "Create read token"),
-                  h(Button, { type: "button", onClick: signIn, disabled: !!busy || !hfToken.trim() }, "Sign in")
+                  h(Button, { type: "button", onClick: signIn, disabled: restartRequired || !!busy || !hfToken.trim() }, "Sign in")
                 ) : null,
                 h("label", { className: "local-rag-consent" }, h("input", { type: "checkbox", checked: acceptedTerms, onChange: function (e) { setAcceptedTerms(e.target.checked); } }), h("span", null, "I accepted the Gemma Terms for this model."))
               )
@@ -228,7 +231,7 @@
                 h(RadioChoice, { name: "local-rag-model-mode", value: "text", checked: mode === "text", title: "Text only", copy: "EmbeddingGemma for messages, summaries, and files.", onChange: function () { setMode("text"); } }),
                 h(RadioChoice, { name: "local-rag-model-mode", value: "visual", checked: mode === "visual", title: "Text + visual", copy: "Adds CLIP image search in a separate vector space.", onChange: function () { setMode("visual"); } })
               ),
-              h(Button, { onClick: function () { action("Download models", "/setup/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ visual: mode === "visual", terms_accepted: acceptedTerms }) }); }, disabled: !!busy || !acceptedTerms || !status.hf.authenticated || (status.text_model_downloaded && (mode === "text" || status.visual_model_downloaded)) }, downloading ? "Downloading…" : "Download selected models"),
+              h(Button, { onClick: function () { action("Download models", "/setup/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ visual: mode === "visual", terms_accepted: acceptedTerms }) }); }, disabled: restartRequired || !!busy || !acceptedTerms || !status.hf.authenticated || (status.text_model_downloaded && (mode === "text" || status.visual_model_downloaded)) }, downloading ? "Downloading…" : "Download selected models"),
               job && job.kind === "download" ? h("div", { className: "local-rag-progress" },
                 h("div", { className: "local-rag-progress-bar", "aria-label": "Download in progress" }, h("span", { className: job.state === "running" ? "is-running" : "" })),
                 h("p", null, job.detail), job.log ? h("pre", null, job.log) : null

@@ -23,7 +23,7 @@ Model weights are not distributed by this plugin. EmbeddingGemma remains subject
 
 ## Dashboard setup
 
-After installing the plugin from **Hermes Dashboard → Plugins**, open the **Local RAG** tab. The wizard installs dependencies, accepts a read-only Hugging Face token through a local password field, downloads the selected models, saves retention and embedding settings, activates the provider, and performs a health check. No Terminal is required for the normal path.
+After installing the plugin from **Hermes Dashboard → Plugins**, open the **Local RAG** tab. The wizard requests native Hermes dependency admission (`hermes plugins enable local_rag`). Restart Hermes and its dashboard after this step; the running process is not repaired in place. After restart, the wizard accepts a read-only Hugging Face token through a local password field, downloads the selected models, saves retention and embedding settings, activates the provider, and performs a health check. No Terminal is required for the normal path.
 
 The token is passed directly to `huggingface_hub.login`, is never placed in a subprocess argument, response, config file, or setup log, and remains governed by Hugging Face's credential storage. Gemma Terms must still be accepted by the user in the browser.
 

@@ -1,6 +1,6 @@
 # Hermes Local RAG
 
-> **1.6.0:** optional in-chat memory diagnostics, controlled entirely by the Local RAG plugin.
+> **1.6.1:** managed-runtime dependency recovery and bootstrap-aware subprocesses after Hermes updates.
 > Read [CHANGELOG.md](CHANGELOG.md) for changes and limitations, and
 > [UPGRADE.md](UPGRADE.md) for the shared-inference and curated-image migration introduced in 1.4.0.
 > See the [synthetic benchmark and its limitations](evaluation/README.md).
@@ -27,12 +27,21 @@ Private, fully local hybrid text and visual memory for [Hermes Agent](https://gi
 
 Published package: [hermes-local-rag on PyPI](https://pypi.org/project/hermes-local-rag/)
 
-For packaged-provider discovery, install it into the same Python environment that runs Hermes:
+For managed Hermes installations, use the native installer so dependencies remain part of Hermes' managed environment:
+
+```bash
+hermes plugins install condr-at/hermes-local-rag/local_rag --yes-deps --enable
+hermes config set memory.provider local_rag
+```
+
+Restart existing Hermes processes after installation. Do not install packages into an obsolete `hermes-agent/venv` or the bare bootstrap interpreter.
+
+For **traditional, unmanaged virtualenvs only**, packaged-provider discovery also supports installing into the same Python environment that runs Hermes:
 
 > Upgrading from 1.3.2 or older: stop every Hermes Desktop and gateway process first. Version 1.4.0 performs a one-time, integrity-checked migration from `memory.sqlite` / `visual.sqlite` to backup-safe `.db` files and removes the legacy files after success.
 
 ```bash
-python -m pip install hermes-local-rag==1.6.0
+python -m pip install hermes-local-rag==1.6.1
 hermes config set memory.provider local_rag
 ```
 
@@ -45,7 +54,7 @@ Prerequisite: an existing Hermes Agent installation.
 1. Open **Hermes Dashboard → Plugins → Install**.
 2. Install `condr-at/hermes-local-rag/local_rag`.
 3. Open the new **Local RAG** tab.
-4. Click **Install dependencies**.
+4. Click **Install dependencies**, then restart Hermes and its dashboard before continuing. This uses native `hermes plugins enable local_rag` dependency admission; it does not repair the running process.
 5. Open and accept the required Gemma Terms, create a read-only Hugging Face token, paste it into the password field, and click **Sign in**.
 6. Choose **Text only** or **Text + visual**, then click **Download selected models**.
 7. Optionally create a historical preview, edit and accept individual candidates, then explicitly apply the reviewed subset.
@@ -56,7 +65,7 @@ The dashboard never displays or logs the Hugging Face token. Model downloads and
 
 The setup wizard:
 
-1. installs pinned runtime dependencies into the Hermes venv;
+1. asks Hermes to admit the manifest dependencies into its managed runtime;
 2. downloads selected model artifacts to `$HERMES_HOME/models`;
 3. writes configuration atomically;
 4. activates `memory.provider=local_rag`;
@@ -80,7 +89,24 @@ Verify after installation or a Hermes update:
 python3 install.py --check
 ```
 
-Then restart the gateway, or start a new Desktop session.
+The installer copies the plugin and runs native `hermes plugins enable local_rag`.
+It does not use the terminal Python to install packages into Hermes. Restart Hermes
+and its dashboard, then finish model terms, authentication, downloads, and provider
+activation in the **Local RAG** tab. `--skip-models` remains accepted for scripted
+code-only setup; model downloads now always happen in the restarted dashboard.
+`--check` checks installation artifacts only; success does not establish runtime health.
+Native `hermes memory status` can exit zero for an unavailable provider. Use the
+dashboard health check to verify dependency imports and provider availability.
+Python children re-enter the native Hermes bootstrap to activate selected dependencies;
+standalone virtual environments retain their own interpreter. No service restart is automatic.
+
+Use `--home /path/to/profile` (or `HERMES_HOME`) to select the installation profile.
+All native commands pin that profile, including the default, instead of following
+the sticky active profile. `HERMES_PYTHON` is no longer used.
+If an already-enabled plugin still has missing dependencies after restart, run
+`HERMES_HOME=/path/to/profile hermes --profile NAME pm install`, then retry
+`plugins enable local_rag` with the same home/profile and restart again. Use
+`NAME=default` for a root home.
 
 ## Configuration
 

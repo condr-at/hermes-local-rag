@@ -19,11 +19,12 @@ import signal
 import socket
 import stat
 import subprocess
-import sys
 import threading
 import time
 from concurrent.futures import Future
 from itertools import count
+
+from .runtime import python_command
 
 # Bounded frame accommodates 32K Unicode characters plus protocol metadata.
 MAX_FRAME = 256_000
@@ -341,9 +342,11 @@ class InferenceClient:
                         log.truncate()
                         env = dict(os.environ)
                         env.pop('PYTHONPATH', None)
+                        env.pop('PYTHONHOME', None)
+                        env['HERMES_HOME'] = str(self.home)
                         child = subprocess.Popen(
-                            [sys.executable, '-m', 'local_rag.inference', '--home', str(self.home),
-                             '--launch-fd', str(launch.fileno())],
+                            python_command('-m', 'local_rag.inference', '--home', str(self.home),
+                                           '--launch-fd', str(launch.fileno())),
                             cwd=str(Path(__file__).resolve().parent.parent), env=env,
                             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                             start_new_session=True, close_fds=True, pass_fds=(launch.fileno(),))

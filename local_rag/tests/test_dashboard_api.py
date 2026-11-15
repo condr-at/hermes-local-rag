@@ -58,11 +58,8 @@ def test_dashboard_backend_loads_outside_repository_cwd(tmp_path: Path) -> None:
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     home = tmp_path / "hermes"
     home.mkdir()
-    python = home / "hermes-agent" / "venv" / "bin" / "python"
-    python.parent.mkdir(parents=True)
-    python.touch(mode=0o755)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_PYTHON", str(python))
+    monkeypatch.setenv("HERMES_PYTHON", "/obsolete/venv/bin/python")
     with api._LOCK:
         api._JOBS.clear()
     app = FastAPI()
@@ -140,7 +137,7 @@ def test_existing_data_without_dimension_metadata_fails_closed(client: TestClien
 def test_models_are_fixed_allowlist_and_visual_opt_in(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     hf = tmp_path / "hf"
     hf.touch()
-    monkeypatch.setattr(api, "_hf", lambda: hf)
+    monkeypatch.setattr(api, "_hf", lambda: [str(hf)])
     calls: list[list[str]] = []
     monkeypatch.setattr(api, "_run", lambda argv, job: calls.append(argv))
     assert client.post("/setup/models", json={"visual": False, "terms_accepted": False}).status_code == 400
@@ -160,7 +157,7 @@ def test_selective_backfill_preview_review_and_apply_are_separate(
 
     def fake_run(command: list[str], job: dict) -> None:
         commands.append(command)
-        if command[1:3] == ["local_rag", "preview"]:
+        if command[3:5] == ["local_rag", "preview"]:
             from local_rag.backfill import _seal_item, plan_key
             plan = Path(command[command.index("--plan") + 1])
             candidate = {
@@ -200,7 +197,7 @@ def test_selective_backfill_preview_review_and_apply_are_separate(
     apply = client.post("/setup/backfill/apply", json={"confirm": True, "revision": review.json()["revision"]})
     assert apply.status_code == 202
     assert wait(client, apply.json()["job_id"])["state"] == "complete"
-    assert commands[-1][1:3] == ["local_rag", "apply"]
+    assert commands[-1][3:5] == ["local_rag", "apply"]
     assert ".backfill-apply-" in commands[-1][commands[-1].index("--plan") + 1]
 
 
@@ -227,14 +224,17 @@ def test_activation_requires_confirmation(client: TestClient) -> None:
     assert client.post("/setup/activate", json={"confirm": False}).status_code == 400
 
 
-def test_dependency_command_uses_managed_python_without_shell(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dependency_command_uses_native_admission_without_shell(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(api, "_run", lambda argv, job: calls.append(argv))
+    monkeypatch.setattr(api.shutil, "which", lambda _: "/managed/hermes")
     response = client.post("/setup/dependencies")
     assert response.status_code == 202
-    assert wait(client, response.json()["job_id"])["state"] == "complete"
-    assert calls[0][:4] == [str(api._python()), "-m", "pip", "install"]
-    assert calls[0][-len(api.DEPENDENCIES):] == api.DEPENDENCIES
+    result = wait(client, response.json()["job_id"])
+    assert result["state"] == "complete"
+    assert result["restart_required"] is True
+    assert "restart" in result["detail"].lower()
+    assert calls == [["/managed/hermes", "--profile", "default", "plugins", "enable", "local_rag"]]
 
 
 def test_dashboard_auth_never_returns_or_logs_token(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -290,7 +290,7 @@ def test_health_sanitizes_provider_launch_failures(client: TestClient, monkeypat
 def test_status_probes_fail_safely(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: Exception) -> None:
     hf = tmp_path / "hf"
     hf.touch()
-    monkeypatch.setattr(api, "_hf", lambda: hf)
+    monkeypatch.setattr(api, "_hf", lambda: [str(hf)])
     monkeypatch.setattr(api.shutil, "which", lambda _: "/managed/hermes")
 
     def fail(*args, **kwargs):
@@ -347,3 +347,33 @@ def test_dashboard_manifest_loads_setup_assets() -> None:
     assert (dashboard / manifest["css"]).is_file()
     assert f'register("{manifest["name"]}", Page)' in script
     assert f'const API = "/api/plugins/{manifest["name"]}"' in script
+
+
+def test_dependency_admission_failure_does_not_claim_restart_success(client, monkeypatch):
+    monkeypatch.setattr(api.shutil, "which", lambda _: "/managed/hermes")
+    def refuse(argv, job):
+        raise RuntimeError("Command exited with status 1")
+    monkeypatch.setattr(api, "_run", refuse)
+    response = client.post("/setup/dependencies")
+    result = wait(client, response.json()["job_id"])
+    assert result["state"] == "failed"
+    assert not result.get("restart_required")
+
+
+def test_dependency_admission_requires_native_launcher(client, monkeypatch):
+    monkeypatch.setattr(api.shutil, "which", lambda _: None)
+    assert client.post("/setup/dependencies").status_code == 409
+
+
+def test_dependency_probe_checks_complete_runtime(client, monkeypatch):
+    commands = []
+    monkeypatch.setattr(api.shutil, "which", lambda _: None)
+    monkeypatch.setattr(api, "_auth_status", lambda: {})
+    def probe(argv, **kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 1)
+    monkeypatch.setattr(api.subprocess, "run", probe)
+    assert not api._status()["dependencies_installed"]
+    assert commands[0][0] == sys.executable
+    assert "ai_edge_litert.interpreter" in commands[0][-1]
+    assert "jsonschema" in commands[0][-1]

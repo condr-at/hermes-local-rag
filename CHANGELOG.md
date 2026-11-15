@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.1 — 2026-11-16
+
+- Declare runtime dependencies in the directory plugin manifest as well as wheel metadata, so native Hermes dependency admission can restore them after an update.
+- Replace hardcoded legacy virtualenv installation with native plugin enable/admission. Re-bootstrap Python children when running inside managed Hermes; standalone Python environments keep their ordinary launch behavior.
+- Use the host launcher for backfill export and profile-specific commands, and the active dependency environment for model downloads and health probes.
+- Keep installer staging and backups outside the plugin discovery directory; archive the legacy `local_rag.previous` copy instead of loading an old duplicate plugin.
+- Clarify that installer `--check` verifies artifacts only, and that running Hermes processes need a restart after dependency admission.
+- Add dependency, directory-import, bootstrap subprocess, and backup regression tests; run CI on Python 3.11 and 3.14.
+
 ## 1.6.0 — 2026-09-13
 
 - Added an off-by-default memory diagnostics checkbox in Local RAG's own settings, not the host application.

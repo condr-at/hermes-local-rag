@@ -447,7 +447,7 @@ def test_plugin_registers_structured_selective_backfill_cli(tmp_path: Path, monk
     python.parent.mkdir(parents=True)
     python.write_text("python", encoding="utf-8")
     def fake_export(command, **_kwargs):
-        target = Path(command[4])
+        target = Path(command[-1])
         export_modes.append(target.stat().st_mode & 0o777)
         target.write_text(export.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setattr(cli.subprocess, "run", fake_export)
@@ -487,7 +487,7 @@ def test_package_declares_hermes_memory_provider_entry_point() -> None:
     metadata = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     package_version = metadata["project"]["version"]
 
-    assert package_version == "1.6.0"
+    assert package_version == "1.6.1"
     assert metadata["project"]["entry-points"]["hermes_agent.memory_providers"] == {
         "local_rag": "local_rag:register",
     }
