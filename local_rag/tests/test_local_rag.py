@@ -439,14 +439,14 @@ def test_plugin_registers_structured_selective_backfill_cli(tmp_path: Path, monk
 
     register(ctx)
     import local_rag.cli as cli
+    from local_rag import runtime
     export_modes = []
-    managed = tmp_path / "hermes-agent" / "hermes"
-    managed.parent.mkdir()
-    managed.write_text("managed", encoding="utf-8")
-    python = tmp_path / "hermes-agent" / "venv" / "bin" / "python"
-    python.parent.mkdir(parents=True)
-    python.write_text("python", encoding="utf-8")
+    # This unit test must not discover the developer's real Hermes launcher.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(runtime, "hermes_command", lambda args: ["hermes-test-launcher", *args])
     def fake_export(command, **_kwargs):
+        assert command[:-1] == ["hermes-test-launcher", "--profile", "default", "sessions", "export"]
+        assert _kwargs["env"]["HERMES_HOME"] == str(tmp_path)
         target = Path(command[-1])
         export_modes.append(target.stat().st_mode & 0o777)
         target.write_text(export.read_text(encoding="utf-8"), encoding="utf-8")
